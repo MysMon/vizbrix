@@ -1,0 +1,32 @@
+# EditorConfig is awesome: https://EditorConfig.org
+
+# トップレベルの設定ファイルであることを示す
+root = true
+
+# 全てのファイルに適用
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# TypeScript/JavaScript/JSON/JSX/TSX
+[*.{ts,js,json,jsx,tsx}]
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+# Markdown
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# YAML
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# CSS/SCSS
+[*.{css,scss}]
+indent_style = space
+indent_size = 2 
