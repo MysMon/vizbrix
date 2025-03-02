@@ -27,7 +27,7 @@
     "visualization",
     "typescript"
   ],
-  "author": "",
+  "author": "MysMon",
   "license": "MIT",
   "peerDependencies": {
     "react": "^19.0.0",
