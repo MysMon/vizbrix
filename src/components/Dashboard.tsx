@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, FC, useCallback } from 'react';
+import { useRef, useState, useEffect, FC, useCallback, useMemo } from 'react';
 import styled from '@emotion/styled';
 import GridLayout, { Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
@@ -8,7 +8,6 @@ import { ChartFactory } from './charts/ChartFactory';
 import { ChartErrorBoundary } from './ErrorBoundary';
 import { debounce } from '../utils/performance';
 import { ChartConfig } from '../types/charts';
-import { DashboardItemProps } from '../types/dashboard';
 
 const DashboardContainer = styled.div<{ gap: number }>`
   padding: ${props => props.gap}px;
@@ -90,7 +89,17 @@ export const Dashboard: FC<DashboardProps> = ({
     }
   }, [onLayoutChange, onError]);
 
-  if (!Array.isArray(items)) {
+  const isValidDashboardItems = useMemo(() => {
+    return Array.isArray(items) && 
+      items.every(item => 
+        typeof item === 'object' && 
+        item !== null && 
+        'id' in item && 
+        'chartConfig' in item
+      );
+  }, [items]);
+
+  if (!isValidDashboardItems) {
     const errorMessage = 'ダッシュボードアイテムの形式が正しくありません';
     
     if (onError) {
@@ -104,33 +113,39 @@ export const Dashboard: FC<DashboardProps> = ({
     return <ErrorMessage>{errorMessage}</ErrorMessage>;
   }
 
-  const layoutItems = items as DashboardItemProps[];
+  const layoutConfig = useMemo(() => ({
+    className: "layout",
+    layout: items,
+    cols: columns,
+    rowHeight,
+    containerPadding: [gap, gap] as [number, number],
+    margin: [gap, gap] as [number, number],
+    isDraggable,
+    isResizable
+  }), [items, columns, rowHeight, gap, isDraggable, isResizable]);
+
+  const chartItems = useMemo(() => {
+    return items.map((item) => (
+      <div key={item.id}>
+        <ChartErrorBoundary onError={onError}>
+          <ChartFactory
+            config={item.chartConfig as ChartConfig}
+          />
+        </ChartErrorBoundary>
+      </div>
+    ));
+  }, [items, onError]);
 
   return (
     <DashboardContainer gap={gap} ref={containerRef}>
       {error && <ErrorMessage>{error}</ErrorMessage>}
       <GridLayout
-        className="layout"
-        layout={layoutItems}
-        cols={columns}
-        rowHeight={rowHeight}
+        {...layoutConfig}
         width={containerWidth}
-        containerPadding={[gap, gap]}
-        margin={[gap, gap]}
-        isDraggable={isDraggable}
-        isResizable={isResizable}
         onLayoutChange={handleLayoutChange}
         draggableHandle=".chart-drag-handle"
       >
-        {layoutItems.map((item) => (
-          <div key={item.id}>
-            <ChartErrorBoundary onError={onError}>
-              <ChartFactory
-                config={item.chartConfig as ChartConfig}
-              />
-            </ChartErrorBoundary>
-          </div>
-        ))}
+        {chartItems}
       </GridLayout>
     </DashboardContainer>
   );

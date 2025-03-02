@@ -1,5 +1,6 @@
-import { CSSProperties, FC, ReactNode, useEffect, useRef } from 'react';
+import { CSSProperties, FC, ReactNode, useEffect, useRef, useCallback, useMemo } from 'react';
 import styled from '@emotion/styled';
+import { ChartError } from '../types/common';
 
 export interface ChartContainerProps {
   title?: string;
@@ -9,7 +10,7 @@ export interface ChartContainerProps {
   height?: number | string;
   children?: ReactNode;
   hasError?: boolean;
-  error?: string;
+  error?: string | ChartError;
   isLoading?: boolean;
   onResize?: () => void;
   isDraggable?: boolean;
@@ -106,20 +107,31 @@ export const ChartContainer: FC<ChartContainerProps> = ({
   isDraggable,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  
+  const handleResize = useCallback(() => {
+    if (onResize) {
+      onResize();
+    }
+  }, [onResize]);
 
   useEffect(() => {
-    if (!onResize || !containerRef.current) return;
+    if (!handleResize || !containerRef.current) return;
 
-    const resizeObserver = new ResizeObserver(() => {
-      onResize();
-    });
-
-    resizeObserver.observe(containerRef.current);
+    const resizeObserver = new ResizeObserver(handleResize);
+    const currentContainer = containerRef.current;
+    
+    resizeObserver.observe(currentContainer);
 
     return () => {
       resizeObserver.disconnect();
     };
-  }, [onResize]);
+  }, [handleResize]);
+
+  const errorMessage = useMemo(() => {
+    if (!error) return 'エラーが発生しました';
+    if (typeof error === 'string') return error;
+    return error.message;
+  }, [error]);
 
   return (
     <Container 
@@ -137,7 +149,7 @@ export const ChartContainer: FC<ChartContainerProps> = ({
       {isLoading ? (
         <LoadingMessage>読み込み中...</LoadingMessage>
       ) : hasError ? (
-        <ErrorMessage>{error || 'エラーが発生しました'}</ErrorMessage>
+        <ErrorMessage>{errorMessage}</ErrorMessage>
       ) : (
         <ChartWrapper>{children}</ChartWrapper>
       )}

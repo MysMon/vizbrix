@@ -82,7 +82,7 @@ export const ChartFactory: FC<ChartFactoryProps> = ({
 
     // データの有無を簡易チェック（詳細検証は各チャートコンポーネントで行う）
     const hasData = config.type === 'gauge' 
-      ? typeof config.value === 'number' && !isNaN(config.value)
+      ? config.type === 'gauge' && 'value' in config && typeof config.value === 'number' && !isNaN(config.value)
       : config.data && Array.isArray(config.data) && config.data.length > 0;
 
     if (!hasData) {
@@ -103,67 +103,79 @@ export const ChartFactory: FC<ChartFactoryProps> = ({
 
     // チャートタイプに応じたコンポーネントの選択
     switch (config.type) {
-      case 'line':
+      case 'line': {
         return <LineChart 
           {...commonProps} 
           data={config.data as XYDataPoint[]} 
           config={config as LineChartConfig} 
         />;
-      case 'bar':
+      }
+      case 'bar': {
         return <BarChart 
           {...commonProps} 
           data={config.data as XYDataPoint[]} 
           config={config as BarChartConfig} 
         />;
-      case 'pie':
+      }
+      case 'pie': {
         return <PieChart 
           {...commonProps} 
           data={config.data as NameValueDataPoint[]} 
           config={config as PieChartConfig} 
         />;
-      case 'composed':
+      }
+      case 'composed': {
+        // 複合チャートは複雑な型のためunknownを経由する
         return <ComposedChart 
           {...commonProps} 
           data={config.data as ComposedDataPoint[]} 
           config={config as unknown as ComposedChartConfig} 
         />;
-      case 'area':
+      }
+      case 'area': {
         return <AreaChart 
           {...commonProps} 
           data={config.data as XYDataPoint[]} 
           config={config as AreaChartConfig} 
         />;
-      case 'scatter':
+      }
+      case 'scatter': {
         return <ScatterChart 
           {...commonProps} 
           data={config.data as XYDataPoint[]} 
           config={config as ScatterChartConfig} 
         />;
-      case 'radar':
+      }
+      case 'radar': {
+        // Radarは複雑な型のためunknownを経由
         return <RadarChart 
           {...commonProps} 
           data={config.data as RadarDataPoint[]} 
           config={config as unknown as RadarChartConfig} 
         />;
-      case 'treemap':
+      }
+      case 'treemap': {
         return <TreemapChart 
           {...commonProps} 
           data={config.data as TreemapDataPoint[]} 
           config={config as TreemapChartConfig} 
         />;
-      case 'funnel':
+      }
+      case 'funnel': {
         return <FunnelChart 
           {...commonProps} 
           data={config.data as NameValueDataPoint[]} 
           config={config as FunnelChartConfig} 
         />;
-      case 'candlestick':
+      }
+      case 'candlestick': {
         return <CandlestickChart 
           {...commonProps} 
           data={config.data as CandlestickDataPoint[]} 
           config={config as CandlestickChartConfig} 
         />;
-      case 'sankey':
+      }
+      case 'sankey': {
         // サンキーチャートのデータは、配列の最初の要素を使用
         if (config.data && Array.isArray(config.data) && config.data.length > 0) {
           return (
@@ -183,7 +195,8 @@ export const ChartFactory: FC<ChartFactoryProps> = ({
             {null}
           </BaseChart>
         );
-      case 'heatmap':
+      }
+      case 'heatmap': {
         return (
           <HeatMapChart 
             {...commonProps} 
@@ -191,14 +204,17 @@ export const ChartFactory: FC<ChartFactoryProps> = ({
             config={config} 
           />
         );
-      case 'gauge': 
-        // ゲージチャートの値が数値であることを再確認
-        if (typeof config.value === 'number' && !isNaN(config.value)) {
+      }
+      case 'gauge': {
+        // ゲージチャートは特別な処理が必要なので、型安全のためにプロパティチェック
+        if ('value' in config && typeof config.value === 'number' && !isNaN(config.value)) {
+          // 安全に型変換
+          const gaugeValue = config.value;
           return (
             <GaugeChart 
               {...commonProps} 
-              data={createGaugeData(config.value)}
-              config={config as GaugeChartConfig} 
+              data={createGaugeData(gaugeValue)}
+              config={config as unknown as GaugeChartConfig} 
             />
           );
         }
@@ -211,6 +227,7 @@ export const ChartFactory: FC<ChartFactoryProps> = ({
             {null}
           </BaseChart>
         );
+      }
       default:
         return (
           <BaseChart

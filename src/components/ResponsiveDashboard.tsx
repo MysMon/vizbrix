@@ -1,4 +1,4 @@
-import { FC, useEffect, useState } from 'react';
+import { FC, useEffect, useState, useCallback } from 'react';
 import { Dashboard } from './Dashboard';
 import { DashboardProps } from '../types/dashboard';
 import { Breakpoint } from '../types/common';
@@ -31,36 +31,58 @@ export const ResponsiveDashboard: FC<ResponsiveDashboardProps> = ({
 }) => {
   const [currentBreakpoint, setCurrentBreakpoint] = useState<Breakpoint>('lg');
 
-  useEffect(() => {
-    const handleResize = () => {
-      const width = window.innerWidth;
-      const breakpointEntries = Object.entries(breakpoints) as [Breakpoint, number][];
-      
-      // ブレークポイントを昇順にソート
-      const sortedBreakpoints = breakpointEntries.sort(([, a], [, b]) => a - b);
-      
-      // 現在の幅に適したブレークポイントを見つける
-      let newBreakpoint: Breakpoint = 'xs';
-      for (const [bp, minWidth] of sortedBreakpoints) {
-        if (width >= minWidth) {
-          newBreakpoint = bp;
-        } else {
-          break;
-        }
-      }
-      
-      setCurrentBreakpoint(newBreakpoint);
+  // 複雑なリサイズ処理をuseCallbackでメモ化
+  const handleResize = useCallback(() => {
+    const width = window.innerWidth;
+    
+    // 型安全にするためにEntries型を明示的に定義
+    type BreakpointEntry = [Breakpoint, number];
+    
+    // アクティブなブレークポイントを取得
+    const mergedBreakpoints: Record<Breakpoint, number> = {
+      ...defaultBreakpoints,
+      ...breakpoints
     };
+    
+    const breakpointEntries = Object.entries(mergedBreakpoints) as BreakpointEntry[];
+    
+    // ブレークポイントを昇順にソート
+    // 昇順にソートすることで、画面幅に合うブレークポイントを小さいものから順に適用し、
+    // 最終的に最も大きな適用可能なブレークポイントを選択できます
+    const sortedBreakpoints = breakpointEntries.sort(([, a], [, b]) => a - b);
+    
+    // 現在の幅に適したブレークポイントを見つける
+    // 幅が各ブレークポイントの最小値以上である限り、そのブレークポイントを適用し続ける
+    let newBreakpoint: Breakpoint = 'xs';
+    for (const [bp, minWidth] of sortedBreakpoints) {
+      if (width >= minWidth) {
+        newBreakpoint = bp;
+      } else {
+        break;
+      }
+    }
+    
+    setCurrentBreakpoint(newBreakpoint);
+  }, [breakpoints]);
 
+  useEffect(() => {
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [breakpoints]);
+  }, [handleResize]);
+
+  // 型安全なアクセスを確保するため、明示的に undefined チェックを行う
+  const resolvedColumns = columns[currentBreakpoint] !== undefined 
+    ? columns[currentBreakpoint] 
+    : defaultColumns[currentBreakpoint];
+
+  // カラム数が undefined になる可能性がないことを保証
+  const safeColumns = resolvedColumns !== undefined ? resolvedColumns : defaultColumns.lg;
 
   return (
     <Dashboard
       {...props}
-      columns={columns[currentBreakpoint] || defaultColumns[currentBreakpoint]}
+      columns={safeColumns}
     />
   );
 }; 
