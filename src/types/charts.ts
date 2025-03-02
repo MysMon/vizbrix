@@ -1,7 +1,15 @@
-import { CSSProperties } from 'react';
+import { CommonStyleProps } from './common';
 
 // フォーマッター関数の型
 export type AxisFormatter = (value: string | number) => string;
+
+// 基本的なデータ型
+type BaseValue = string | number | undefined;
+
+// チャートデータの基本型
+export interface ChartDataPoint {
+  [key: string]: BaseValue | ChartDataPoint[];
+}
 
 // ツールチップのプロパティインターフェース
 export interface TooltipPayload<T = Record<string, unknown>> {
@@ -15,14 +23,6 @@ export interface TooltipProps<T = Record<string, unknown>> {
   payload?: TooltipPayload<T>[];
   label?: string;
   active?: boolean;
-}
-
-// 基本的なデータ型
-type BaseValue = string | number | undefined;
-
-// チャートデータの基本型
-export interface ChartDataPoint {
-  [key: string]: BaseValue | ChartDataPoint[];
 }
 
 // 基本的なチャートの設定インターフェース
@@ -46,19 +46,27 @@ export interface BaseChartConfig {
   ) => string | number;
 }
 
+// チャートデータの共用型
+export type ChartDataType = 
+  | ChartDataPoint 
+  | XYDataPoint 
+  | NameValueDataPoint 
+  | TreemapDataPoint 
+  | CandlestickDataPoint 
+  | SankeyChartData 
+  | HeatMapSeries;
+
 // 拡張チャート設定インターフェース
 export interface ChartConfig extends BaseChartConfig {
-  data?: (ChartDataPoint | XYDataPoint | NameValueDataPoint | TreemapDataPoint | CandlestickDataPoint | SankeyChartData | HeatMapSeries)[];
+  data?: ChartDataType[];
   value?: number;
   [key: string]: unknown;
 }
 
 // 基本的なチャートのプロパティインターフェース
-export interface BaseChartProps {
+export interface BaseChartProps extends CommonStyleProps {
   width?: number | string;
   height?: number | string;
-  style?: CSSProperties;
-  className?: string;
 }
 
 // XYデータポイントの型
@@ -158,8 +166,8 @@ export interface PieChartConfig extends BaseChartConfig {
   innerRadius?: number | string;
   outerRadius?: number | string;
   labelLine?: boolean;
-  nameKey?: 'name';
-  valueKey?: 'value';
+  nameKey?: string;
+  valueKey?: string;
 }
 
 export interface PieChartProps extends BaseChartProps {

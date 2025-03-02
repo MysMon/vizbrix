@@ -29,9 +29,11 @@ export type {
   DashboardProps,
   DashboardItemProps,
   ChartContainerProps,
-  ChartType,
-  ChartConfig,
 } from './types/dashboard';
+
+export type {
+  ChartConfig,
+} from './types/charts';
 
 export type {
   BaseChartProps,

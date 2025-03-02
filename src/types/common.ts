@@ -1,6 +1,6 @@
 import { CSSProperties } from 'react';
 import { Theme } from './theme';
-import { BaseDataPoint } from './charts';
+import { ChartDataPoint } from './charts';
 
 export type Breakpoint = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
 
@@ -13,7 +13,7 @@ export interface ChartError {
   details?: unknown;
 }
 
-export interface ChartEvents<T extends BaseDataPoint = BaseDataPoint> {
+export interface ChartEvents<T extends ChartDataPoint = ChartDataPoint> {
   onClick?: (event: MouseEvent, data: T) => void;
   onHover?: (event: MouseEvent, data: T) => void;
   onMouseLeave?: (event: MouseEvent) => void;
@@ -34,9 +34,14 @@ export interface DataConfig {
   formatter?: (value: number) => string;
 }
 
-export interface StyleConfig {
+// 基本的なスタイル要素を持つインターフェース
+export interface CommonStyleProps {
   className?: string;
   style?: CSSProperties;
+}
+
+// 拡張スタイル設定
+export interface StyleConfig extends CommonStyleProps {
   animation?: boolean;
   animationDuration?: number;
 } 

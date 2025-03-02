@@ -1,21 +1,16 @@
-import { ReactNode, CSSProperties } from 'react';
+import { ReactNode } from 'react';
 import { Layout } from 'react-grid-layout';
 import {
   ChartConfig,
-  XYDataPoint,
-  NameValueDataPoint,
-  TreemapDataPoint,
-  CandlestickDataPoint,
-  SankeyChartData,
-  HeatMapSeries,
+  ChartDataType,
 } from './charts';
-import { ChartError } from './common';
+import { ChartError, CommonStyleProps } from './common';
 
 export interface DashboardItemProps extends Layout {
   id: string;
   title: string;
   chartConfig: ChartConfig;
-  data: XYDataPoint[] | NameValueDataPoint[] | TreemapDataPoint[] | CandlestickDataPoint[] | SankeyChartData | HeatMapSeries[];
+  data: ChartDataType[];
 }
 
 export interface DashboardProps {
@@ -29,11 +24,9 @@ export interface DashboardProps {
   onError?: (error: ChartError) => void;
 }
 
-export interface ChartContainerProps {
+export interface ChartContainerProps extends CommonStyleProps {
   title?: string;
   children: ReactNode;
-  className?: string;
-  style?: CSSProperties;
   onResize?: () => void;
   isLoading?: boolean;
   hasError?: boolean;
