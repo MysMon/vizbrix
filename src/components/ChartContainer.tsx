@@ -132,7 +132,7 @@ export const ChartContainer: FC<ChartContainerProps> = ({
     >
       <Header>
         {title && <Title>{title}</Title>}
-        {isDraggable && <DragHandle />}
+        {isDraggable && <DragHandle className="chart-drag-handle" />}
       </Header>
       {isLoading ? (
         <LoadingMessage>読み込み中...</LoadingMessage>

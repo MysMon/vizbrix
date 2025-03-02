@@ -1,4 +1,15 @@
 import { Theme } from '../types/theme';
+import { 
+  TooltipProps, 
+  TooltipPayload, 
+  ChartDataPoint,
+  XYDataPoint,
+  NameValueDataPoint,
+  RadarDataPoint,
+  CandlestickDataPoint,
+  SankeyChartData,
+  HeatMapSeries
+} from '../types/charts';
 
 interface ValidationResult<T> {
   validData: T[];
@@ -7,6 +18,12 @@ interface ValidationResult<T> {
 
 interface DomainOptions {
   padding?: number;
+}
+
+// 標準化されたチャートデータ検証の結果
+export interface ChartValidationResult {
+  isValid: boolean;
+  error?: string;
 }
 
 export const chartUtils = {
@@ -166,4 +183,156 @@ export const chartUtils = {
     padding: theme.spacing.padding,
     textAlign: 'center' as const,
   }),
+
+  // 新規追加される共通関数
+  
+  /**
+   * 統一されたチャートデータ検証関数
+   * BaseChart.validateChartDataの代替として使用
+   */
+  validateChartData: <T extends unknown[]>(
+    data: T | undefined,
+    validator?: (data: T) => boolean
+  ): ChartValidationResult => {
+    if (!data) {
+      return { isValid: false, error: 'データが見つかりません' };
+    }
+
+    if (!Array.isArray(data)) {
+      return { isValid: false, error: 'データが配列ではありません' };
+    }
+
+    if (data.length === 0) {
+      return { isValid: false, error: 'データが空です' };
+    }
+
+    if (validator && !validator(data)) {
+      return { isValid: false, error: 'データの形式が正しくありません' };
+    }
+
+    return { isValid: true };
+  },
+
+  /**
+   * 一般的なXY型データポイントの検証
+   */
+  validateXYData: (data: XYDataPoint[] | undefined): ChartValidationResult => {
+    return chartUtils.validateChartData(data, (items) => 
+      items.every(item => item.x !== undefined && item.y !== undefined)
+    );
+  },
+
+  /**
+   * 名前と値のペア型データポイントの検証
+   */
+  validateNameValueData: (data: NameValueDataPoint[] | undefined): ChartValidationResult => {
+    return chartUtils.validateChartData(data, (items) => 
+      items.every(item => item.name !== undefined && item.value !== undefined)
+    );
+  },
+
+  /**
+   * レーダーチャートデータの検証
+   */
+  validateRadarData: (data: RadarDataPoint[] | undefined, nameKey: string, dataKeys: string[]): ChartValidationResult => {
+    return chartUtils.validateChartData(data, (items) => 
+      items.every(item => {
+        if (item[nameKey] === undefined) return false;
+        return dataKeys.every(key => typeof item[key] === 'number');
+      })
+    );
+  },
+
+  /**
+   * ローソク足チャートデータの検証
+   */
+  validateCandlestickData: (data: CandlestickDataPoint[] | undefined): ChartValidationResult => {
+    return chartUtils.validateChartData(data, (items) => 
+      items.every(item => 
+        item.date !== undefined &&
+        item.open !== undefined &&
+        item.high !== undefined &&
+        item.low !== undefined &&
+        item.close !== undefined
+      )
+    );
+  },
+
+  /**
+   * サンキーチャートデータの検証
+   */
+  validateSankeyData: (data: SankeyChartData | undefined): ChartValidationResult => {
+    if (!data || !data.nodes || !data.links) {
+      return { isValid: false, error: "サンキーチャートのデータが無効です" };
+    }
+    
+    if (data.nodes.length === 0 || data.links.length === 0) {
+      return { isValid: false, error: "サンキーチャートのデータが空です" };
+    }
+    
+    return { isValid: true };
+  },
+
+  /**
+   * ヒートマップデータの検証
+   */
+  validateHeatMapData: (data: HeatMapSeries[] | undefined): ChartValidationResult => {
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      return { isValid: false, error: "ヒートマップのデータが無効です" };
+    }
+    
+    for (const series of data) {
+      if (!series.data || !Array.isArray(series.data) || series.data.length === 0) {
+        return { isValid: false, error: "ヒートマップのシリーズデータが無効です" };
+      }
+      
+      for (const point of series.data) {
+        if (point.x === undefined || point.y === undefined || point.value === undefined) {
+          return { isValid: false, error: "ヒートマップのデータポイントが無効です" };
+        }
+      }
+    }
+    
+    return { isValid: true };
+  },
+
+  /**
+   * 統一されたツールチップ処理関数
+   */
+  formatTooltip: <T extends ChartDataPoint>(
+    value: number, 
+    name: string, 
+    props: TooltipProps<T>,
+    formatter?: (value: number, name: string, data: Record<string, unknown>) => string | number
+  ): string | number => {
+    if (formatter && props.payload?.[0]) {
+      const item = props.payload[0] as TooltipPayload<T>;
+      return formatter(
+        value,
+        name,
+        { name, value, payload: item.payload }
+      );
+    }
+    // 統一されたデフォルト形式
+    return `${name}: ${value}`;
+  },
+
+  /**
+   * カラー配列から色を取得（指定されていない場合はデフォルト色を返す）
+   */
+  getChartColor: (chartColors: string[] | undefined, index: number, defaultColor: string): string => {
+    if (chartColors && chartColors.length > index) {
+      return chartColors[index];
+    }
+    return defaultColor;
+  },
+
+  /**
+   * カラー値をパーセンテージに応じて取得（ヒートマップなどで使用）
+   */
+  getColorByValue: (value: number, min: number, max: number, colorScale: string[]): string => {
+    const normalizedValue = Math.max(0, Math.min(1, (value - min) / (max - min || 1)));
+    const index = Math.floor(normalizedValue * (colorScale.length - 1));
+    return colorScale[index];
+  }
 }; 

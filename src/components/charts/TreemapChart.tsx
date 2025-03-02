@@ -1,72 +1,42 @@
-import { FC, useMemo } from 'react';
+import { memo, useMemo, useCallback } from 'react';
 import {
-  Treemap,
+  Treemap as RechartsTreemap,
   ResponsiveContainer,
   Tooltip,
 } from 'recharts';
-import { ChartContainer } from '../ChartContainer';
-import { TreemapChartProps, TreemapDataPoint } from '../../types/charts';
-import { TooltipProps as RechartsTooltipProps } from 'recharts';
-import { useTheme } from '../../theme/ThemeProvider';
+import { TreemapChartProps } from '../../types/charts';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import { BaseChart } from './BaseChart';
 import { chartUtils } from '../../utils/chartUtils';
 
-interface CustomContentProps {
-  root: TreemapDataPoint;
-  depth: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  name: string;
-  value: number;
-}
+/**
+ * ツリーマップチャートコンポーネント
+ * 階層構造を入れ子の長方形として表示します
+ */
+export const TreemapChart = memo(({ data, config, width, height, style, className }: TreemapChartProps) => {
+  const { tooltip, formatTooltip, getColor } = useChartTheme();
 
-export const TreemapChart: FC<TreemapChartProps> = ({
-  data = [],
-  width,
-  height,
-  className,
-  style,
-  config: {
-    title,
-    tooltipFormatter,
-    chartColors,
-    error: propError,
-    isLoading,
-  }
-}) => {
-  const theme = useTheme();
-  const {
-    colors: { primary, secondary, success, warning, text },
-  } = theme;
+  // 設定から頻繁に使用される値を抽出
+  const { 
+    tooltipFormatter, 
+    chartColors, 
+    title, 
+    error: configError, 
+    isLoading 
+  } = config;
 
-  const { validData, error: validationError } = useMemo(() => 
-    chartUtils.validateData<TreemapDataPoint>(
-      data,
-      ['name', 'value'],
-      ['value']
+  // データの検証
+  const { isValid, error } = useMemo(() => 
+    chartUtils.validateChartData(data, (items) => 
+      items.every(item => item.name !== undefined && item.value !== undefined)
     ),
-  [data]);
+    [data]
+  );
 
-  const hasData = validData.length > 0;
-  const error = propError || validationError;
-
-  const colorScale = useMemo(() => {
-    if (!hasData) return [];
-    const defaultColors = chartColors || [primary, secondary, success, warning];
-    const maxDepth = Math.max(...validData.map((item: TreemapDataPoint) => 
-      item.children ? 2 : 1
-    ));
-    return chartUtils.generateGradient(defaultColors, maxDepth * 3);
-  }, [validData, hasData, chartColors, primary, secondary, success, warning]);
-
-  const renderCustomContent = (props: CustomContentProps) => {
-    const { depth, x, y, width, height, name, value } = props;
-    const formattedValue = chartUtils.formatValue(value);
-    const isRoot = depth === 1;
-    const fontSize = isRoot ? theme.typography.fontSize.value : theme.typography.fontSize.label;
-
-    if (width < 50 || height < 50) return null;
+  // カスタムコンテンツレンダラー
+  const renderContent = useCallback((props: { x: number; y: number; width: number; height: number; depth: number; name: string }) => {
+    const { x, y, width, height, depth, name } = props;
+    if (width < 30 || height < 30) return null;
 
     return (
       <g>
@@ -75,75 +45,83 @@ export const TreemapChart: FC<TreemapChartProps> = ({
           y={y}
           width={width}
           height={height}
-          fill={colorScale[depth]}
-          stroke={theme.colors.background}
-          strokeWidth={2}
+          style={{
+            fill: getColor(depth, chartColors),
+            stroke: '#fff',
+            strokeWidth: 2 / (depth + 1e-10),
+            strokeOpacity: 1 / (depth + 1e-10),
+          }}
         />
-        <text
-          x={x + width / 2}
-          y={y + height / 2 - (isRoot ? 12 : 8)}
-          textAnchor="middle"
-          fill={text}
-          fontSize={fontSize}
-        >
-          {name}
-        </text>
-        <text
-          x={x + width / 2}
-          y={y + height / 2 + (isRoot ? 12 : 8)}
-          textAnchor="middle"
-          fill={text}
-          fontSize={fontSize}
-        >
-          {formattedValue}
-        </text>
+        {width > 50 && height > 30 && (
+          <text
+            x={x + width / 2}
+            y={y + height / 2}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            style={{
+              fontSize: 14,
+              fill: '#fff',
+              fontWeight: 'bold',
+            }}
+          >
+            {name}
+          </text>
+        )}
       </g>
     );
-  };
+  }, [chartColors, getColor]);
+
+  // ツールチップフォーマッター
+  const handleTooltip = useCallback((value: number, name: string, props: any) => {
+    return formatTooltip(value, name, props, tooltipFormatter);
+  }, [tooltipFormatter, formatTooltip]);
+
+  // チャートコンテンツのメモ化
+  const chartContent = useMemo(() => {
+    if (!isValid) return null;
+
+    return (
+      <ResponsiveContainer width={width ?? '100%'} height={height ?? 400}>
+        <RechartsTreemap
+          data={data}
+          dataKey="value"
+          aspectRatio={4/3}
+          stroke="#fff"
+          content={renderContent}
+        >
+          <Tooltip
+            formatter={handleTooltip}
+            contentStyle={tooltip.contentStyle}
+            labelStyle={tooltip.labelStyle}
+          />
+        </RechartsTreemap>
+      </ResponsiveContainer>
+    );
+  }, [
+    isValid, 
+    data, 
+    width, 
+    height, 
+    tooltip.contentStyle, 
+    tooltip.labelStyle, 
+    renderContent, 
+    handleTooltip
+  ]);
 
   return (
-    <ChartContainer 
+    <BaseChart
       title={title}
+      error={error || configError}
+      isLoading={isLoading}
+      hasError={!isValid || !!configError}
       width={width}
       height={height}
-      className={className} 
       style={style}
-      hasError={!hasData}
-      error={error}
-      isLoading={isLoading}
+      className={className}
     >
-      {hasData && (
-        <ResponsiveContainer width="100%" height="100%">
-          <Treemap
-            data={validData}
-            dataKey="value"
-            ratio={4/3}
-            stroke={theme.colors.background}
-            content={renderCustomContent}
-            isAnimationActive={!isLoading}
-          >
-            <Tooltip
-              content={(props: RechartsTooltipProps<number, string>) => {
-                const { active, payload } = props;
-                if (!active || !payload || !payload.length) return null;
-
-                const data = payload[0].payload as TreemapDataPoint;
-                const formattedValue = tooltipFormatter
-                  ? tooltipFormatter(data.value, data.name, { value: data.value, name: data.name, dataKey: 'value', payload: data })
-                  : chartUtils.formatValue(data.value);
-
-                return (
-                  <div className="custom-tooltip">
-                    <p>{`${data.name}: ${formattedValue}`}</p>
-                    {data.children && <p style={{ opacity: 0.7 }}>{`子要素数: ${data.children.length}`}</p>}
-                  </div>
-                );
-              }}
-              contentStyle={chartUtils.getTooltipStyle(theme)}
-            />
-          </Treemap>
-        </ResponsiveContainer>
-      )}
-    </ChartContainer>
+      {chartContent}
+    </BaseChart>
   );
-};
+});
+
+TreemapChart.displayName = 'TreemapChart';

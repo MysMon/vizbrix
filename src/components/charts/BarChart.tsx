@@ -1,4 +1,4 @@
-import { FC, useMemo } from 'react';
+import { memo, useMemo, useCallback } from 'react';
 import {
   BarChart as RechartsBarChart,
   Bar,
@@ -6,160 +6,134 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  ResponsiveContainer,
   Legend,
+  ResponsiveContainer,
 } from 'recharts';
-import { ChartContainer } from '../ChartContainer';
-import { BarChartProps, TooltipProps } from '../../types/charts';
-import { useTheme } from '../../theme/ThemeProvider';
+import { BarChartProps } from '../../types/charts';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import { BaseChart } from './BaseChart';
 import { chartUtils } from '../../utils/chartUtils';
 
-export const BarChart: FC<BarChartProps> = ({
-  data = [],
-  width,
-  height,
-  className,
-  style,
-  config: {
-    xAxisKey,
-    yAxisKey,
+/**
+ * バーチャートコンポーネント
+ * カテゴリごとの数値データを棒グラフとして表示します
+ */
+export const BarChart = memo(({ data, config, width, height, style, className }: BarChartProps) => {
+  const { colors, tooltip, formatTooltip } = useChartTheme();
+
+  // 設定から頻繁に使用される値を抽出
+  const { 
+    tooltipFormatter, 
+    chartColors, 
+    xAxisLabel, 
+    yAxisLabel, 
+    showLegend, 
+    horizontal = false,
     title,
-    tooltipFormatter,
-    layout = 'vertical',
-    stackedKeys,
-    chartColors,
-    showLegend = false,
-    xAxisLabel,
-    yAxisLabel,
-    error: propError,
+    error: configError,
     isLoading
-  }
-}) => {
-  const theme = useTheme();
-  const {
-    colors: { primary, secondary, success, warning, text, grid },
-    typography: { fontSize }
-  } = theme;
+  } = config;
+  
+  // データの検証
+  const { isValid, error } = useMemo(() => 
+    chartUtils.validateXYData(data),
+    [data]
+  );
 
-  const defaultColors = chartColors || [primary, secondary, success, warning];
+  // ツールチップフォーマッター
+  const handleTooltip = useCallback((value: number, name: string, props: any) => {
+    return formatTooltip(value, name, props, tooltipFormatter);
+  }, [tooltipFormatter, formatTooltip]);
 
-  const { validData, error: validationError } = useMemo(() => {
-    const keysToValidate = stackedKeys ? [xAxisKey, ...stackedKeys] : [xAxisKey, yAxisKey];
-    const numericKeys = stackedKeys || [yAxisKey];
-    return chartUtils.validateData(data, keysToValidate, numericKeys);
-  }, [data, xAxisKey, yAxisKey, stackedKeys]);
+  // チャートコンテンツのメモ化
+  const chartContent = useMemo(() => {
+    if (!isValid) return null;
 
-  const hasData = validData.length > 0;
-  const error = propError || validationError;
-
-  const yDomain = useMemo(() => {
-    if (!hasData) return [0, 0];
-    if (stackedKeys) {
-      const stackTotals = validData.map(item => 
-        stackedKeys.reduce((sum, key) => sum + Number(item[key] || 0), 0)
-      );
-      return chartUtils.calculateDomain(stackTotals, { padding: 0.1 });
-    }
-    const values = validData.map(item => Number(item[yAxisKey]));
-    return chartUtils.calculateDomain(values, { padding: 0.1 });
-  }, [validData, yAxisKey, stackedKeys, hasData]);
-
-  const CustomTooltip = ({ active, payload }: TooltipProps) => {
-    if (!active || !payload || !payload.length) return null;
-
-    const data = payload[0].payload as { name: string; value: number };
-    const formattedValue = tooltipFormatter
-      ? tooltipFormatter(data.value, data.name, { value: data.value, name: data.name, dataKey: 'value', payload: data })
-      : chartUtils.formatValue(data.value);
+    // 水平/垂直レイアウト設定
+    const chartLayout = horizontal ? 'horizontal' : 'vertical';
+    
+    // X軸とY軸のキー設定
+    const xKey = 'x';
+    const yKey = 'y';
+    
+    // バーの色
+    const barColor = chartColors?.[0] ?? colors.primary;
 
     return (
-      <div className="custom-tooltip">
-        <p>{`${data.name}: ${formattedValue}`}</p>
-      </div>
+      <ResponsiveContainer width={width ?? '100%'} height={height ?? 400}>
+        <RechartsBarChart
+          data={data}
+          layout={chartLayout}
+          margin={tooltip.margin}
+        >
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis
+            type="category"
+            dataKey={chartLayout === 'horizontal' ? yKey : xKey}
+            label={xAxisLabel ? {
+              value: xAxisLabel,
+              position: 'bottom',
+              offset: -5
+            } : undefined}
+          />
+          <YAxis
+            type="number"
+            label={yAxisLabel ? {
+              value: yAxisLabel,
+              angle: -90,
+              position: 'insideLeft'
+            } : undefined}
+          />
+          <Tooltip
+            formatter={handleTooltip}
+            contentStyle={tooltip.contentStyle}
+            labelStyle={tooltip.labelStyle}
+          />
+          {showLegend && (
+            <Legend
+              align="center"
+              verticalAlign="bottom"
+            />
+          )}
+          <Bar
+            dataKey={chartLayout === 'horizontal' ? xKey : yKey}
+            fill={barColor}
+            radius={[4, 4, 0, 0]}
+          />
+        </RechartsBarChart>
+      </ResponsiveContainer>
     );
-  };
+  }, [
+    isValid,
+    data,
+    width,
+    height,
+    tooltip.margin,
+    tooltip.contentStyle,
+    tooltip.labelStyle,
+    horizontal,
+    chartColors,
+    colors.primary,
+    xAxisLabel,
+    yAxisLabel,
+    showLegend,
+    handleTooltip
+  ]);
 
   return (
-    <ChartContainer 
+    <BaseChart
       title={title}
+      error={error || configError}
+      isLoading={isLoading}
+      hasError={!isValid || !!configError}
       width={width}
       height={height}
-      className={className} 
       style={style}
-      hasError={!hasData}
-      error={error}
-      isLoading={isLoading}
+      className={className}
     >
-      {hasData && (
-        <ResponsiveContainer width="100%" height="100%">
-          <RechartsBarChart
-            data={validData}
-            layout={layout}
-            margin={{ top: theme.spacing.chart, right: theme.spacing.chart, left: 0, bottom: 0 }}
-          >
-            <CartesianGrid 
-              strokeDasharray="3 3" 
-              stroke={grid} 
-            />
-            <XAxis
-              type={layout === 'vertical' ? 'number' : 'category'}
-              dataKey={layout === 'vertical' ? undefined : xAxisKey}
-              stroke={text}
-              fontSize={fontSize.label}
-              label={xAxisLabel ? {
-                value: xAxisLabel,
-                position: 'bottom',
-                offset: 0,
-                fontSize: fontSize.label,
-                fill: text
-              } : undefined}
-              tick={{ fill: text }}
-              domain={layout === 'vertical' ? yDomain : undefined}
-            />
-            <YAxis
-              type={layout === 'vertical' ? 'category' : 'number'}
-              dataKey={layout === 'vertical' ? yAxisKey : undefined}
-              stroke={text}
-              fontSize={fontSize.label}
-              label={yAxisLabel ? {
-                value: yAxisLabel,
-                angle: -90,
-                position: 'insideLeft',
-                fontSize: fontSize.label,
-                fill: text
-              } : undefined}
-              tick={{ fill: text }}
-              domain={layout === 'vertical' ? undefined : yDomain}
-            />
-            <Tooltip
-              content={<CustomTooltip />}
-              contentStyle={chartUtils.getTooltipStyle(theme)}
-            />
-            {showLegend && (
-              <Legend
-                wrapperStyle={chartUtils.getLegendStyle(theme)}
-              />
-            )}
-            {stackedKeys ? (
-              stackedKeys.map((key, index) => (
-                <Bar
-                  key={key}
-                  dataKey={key}
-                  fill={defaultColors[index % defaultColors.length]}
-                  stackId="stack"
-                  isAnimationActive={!isLoading}
-                />
-              ))
-            ) : (
-              <Bar
-                dataKey={yAxisKey}
-                fill={defaultColors[0]}
-                isAnimationActive={!isLoading}
-              />
-            )}
-          </RechartsBarChart>
-        </ResponsiveContainer>
-      )}
-    </ChartContainer>
+      {chartContent}
+    </BaseChart>
   );
-};
+});
+
+BarChart.displayName = 'BarChart';

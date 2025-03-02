@@ -1,174 +1,161 @@
-import { FC, useMemo } from 'react';
+import { memo, useMemo, useCallback } from 'react';
 import {
   ScatterChart,
   Scatter,
+  Cell,
   XAxis,
   YAxis,
   ZAxis,
+  CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Cell,
 } from 'recharts';
-import { TooltipProps as RechartsTooltipProps } from 'recharts';
-import { ChartContainer } from '../ChartContainer';
-import { HeatMapChartProps, HeatMapDataPoint } from '../../types/charts';
-import { useTheme } from '../../theme/ThemeProvider';
+import { HeatMapChartProps} from '../../types/charts';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import { BaseChart } from './BaseChart';
 import { chartUtils } from '../../utils/chartUtils';
 
-export const HeatMapChart: FC<HeatMapChartProps> = ({
-  data = [],
-  width,
-  height,
-  className,
-  style,
-  config: {
-    title,
-    tooltipFormatter,
+/**
+ * ヒートマップチャートコンポーネント
+ * 2次元データの密度や分布を色の濃淡で表示します
+ */
+export const HeatMapChart = memo(({ data, config, width, height, style, className }: HeatMapChartProps) => {
+  const { colors, tooltip, formatTooltip } = useChartTheme();
+
+  // 設定から頻繁に使用される値を抽出
+  const { 
+    tooltipFormatter, 
+    chartColors, 
+    xAxisLabel, 
+    yAxisLabel,
     xAxisFormatter,
     yAxisFormatter,
-    chartColors,
-    error: propError,
-    isLoading,
-  }
-}) => {
-  const theme = useTheme();
-  const {
-    colors: { primary, error: errorColor, text },
-    typography: { fontSize }
-  } = theme;
+    fillOpacity = 0.8,
+    title,
+    error: configError,
+    isLoading
+  } = config;
 
-  const defaultColors = useMemo(() => chartColors || [primary, errorColor], [chartColors, primary, errorColor]);
+  // データの検証
+  const { isValid, error } = useMemo(() => 
+    chartUtils.validateHeatMapData(data),
+    [data]
+  );
 
-  const { validData, error: validationError } = useMemo(() => {
-    if (!Array.isArray(data)) {
-      return {
-        validData: [],
-        error: 'データの形式が正しくありません'
-      };
-    }
-
-    const allValidData = data.reduce((acc, series) => {
-      if (!series.data || !Array.isArray(series.data)) return acc;
-
-      const validPoints = series.data.filter(point => 
-        typeof point === 'object' &&
-        point !== null &&
-        'x' in point &&
-        'y' in point &&
-        'value' in point &&
-        !isNaN(Number(point.value))
-      );
-
-      return [...acc, ...validPoints];
-    }, [] as HeatMapDataPoint[]);
-
-    if (allValidData.length === 0) {
-      return {
-        validData: [],
-        error: 'データが見つかりません'
-      };
-    }
-
-    return {
-      validData: allValidData,
-      error: undefined
-    };
-  }, [data]);
-
-  const hasData = validData.length > 0;
-  const error = propError || validationError;
-
-  const { minValue, maxValue, uniqueValues } = useMemo(() => {
-    if (!hasData) return { minValue: 0, maxValue: 0, uniqueValues: new Set() };
+  // 値に基づく色の取得
+  const getColor = useCallback((value: number, min: number, max: number) => {
+    const defaultColors = chartColors || [
+      colors.success,
+      colors.warning,
+      colors.error,
+    ];
     
-    const values = validData.map(d => Number(d.value));
-    return {
-      minValue: Math.min(...values),
-      maxValue: Math.max(...values),
-      uniqueValues: new Set(values)
-    };
-  }, [validData, hasData]);
+    return chartUtils.getColorByValue(value, min, max, defaultColors);
+  }, [chartColors, colors.success, colors.warning, colors.error]);
 
-  const colorScale = useMemo(() => {
-    if (!hasData) return [];
-    const steps = uniqueValues.size || 10;
-    return chartUtils.generateGradient(defaultColors, steps);
-  }, [defaultColors, uniqueValues.size, hasData]);
+  // ツールチップフォーマッター
+  const handleTooltip = useCallback((value: number, name: string, props: any) => {
+    return formatTooltip(value, name, props, tooltipFormatter);
+  }, [tooltipFormatter, formatTooltip]);
 
-  const getColorForValue = (value: number) => {
-    if (!hasData) return defaultColors[0];
-    const normalizedValue = (value - minValue) / (maxValue - minValue);
-    const colorIndex = Math.floor(normalizedValue * (colorScale.length - 1));
-    return colorScale[Math.max(0, Math.min(colorScale.length - 1, colorIndex))];
-  };
+  // チャートコンテンツのメモ化
+  const chartContent = useMemo(() => {
+    if (!isValid || !data || data.length === 0) return null;
 
-  return (
-    <ChartContainer 
-      title={title}
-      width={width}
-      height={height}
-      className={className} 
-      style={style}
-      hasError={!hasData}
-      error={error}
-      isLoading={isLoading}
-    >
-      {hasData && (
-        <ResponsiveContainer width="100%" height="100%">
-          <ScatterChart
-            margin={{ top: theme.spacing.chart, right: theme.spacing.chart, bottom: theme.spacing.chart, left: theme.spacing.chart }}
-          >
-            <XAxis
-              dataKey="x"
-              type="category"
-              stroke={text}
-              fontSize={fontSize.label}
-              tickFormatter={xAxisFormatter}
-            />
-            <YAxis
-              dataKey="y"
-              type="category"
-              stroke={text}
-              fontSize={fontSize.label}
-              tickFormatter={yAxisFormatter}
-            />
-            <ZAxis
-              dataKey="value"
-              type="number"
-              range={[500, 500]}
-            />
-            <Tooltip
-              content={(props: RechartsTooltipProps<number, string>) => {
-                const { active, payload } = props;
-                if (!active || !payload || !payload.length) return null;
-
-                const data = payload[0].payload;
-                const formattedValue = tooltipFormatter
-                  ? tooltipFormatter(data.value, `${data.x}, ${data.y}`, { value: data.value, name: `${data.x}, ${data.y}`, dataKey: 'value', payload: data })
-                  : chartUtils.formatValue(data.value);
-
-                return (
-                  <div className="custom-tooltip">
-                    <p>{`${data.x}, ${data.y}: ${formattedValue}`}</p>
-                  </div>
-                );
-              }}
-              contentStyle={chartUtils.getTooltipStyle(theme)}
-            />
-            <Scatter
-              data={validData}
-              isAnimationActive={!isLoading}
+    // 全データを単一の配列に平坦化
+    const flatData = data.flatMap(series => series.data);
+    
+    // 最小値と最大値の計算
+    const valueMin = Math.min(...flatData.map(item => item.value));
+    const valueMax = Math.max(...flatData.map(item => item.value));
+    
+    return (
+      <ResponsiveContainer width={width ?? '100%'} height={height ?? 400}>
+        <ScatterChart
+          margin={tooltip.margin}
+        >
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis 
+            dataKey="x" 
+            name="X"
+            type="category"
+            tickFormatter={xAxisFormatter}
+            label={xAxisLabel ? {
+              value: xAxisLabel,
+              position: 'bottom',
+              offset: -5
+            } : undefined}
+          />
+          <YAxis 
+            dataKey="y" 
+            name="Y"
+            type="category"
+            tickFormatter={yAxisFormatter}
+            label={yAxisLabel ? {
+              value: yAxisLabel,
+              angle: -90,
+              position: 'insideLeft'
+            } : undefined}
+          />
+          <ZAxis 
+            dataKey="value" 
+            range={[50, 500]} 
+            name="値"
+          />
+          <Tooltip
+            formatter={handleTooltip}
+            contentStyle={tooltip.contentStyle}
+            labelStyle={tooltip.labelStyle}
+          />
+          {data.map((series, seriesIndex) => (
+            <Scatter 
+              key={`series-${seriesIndex}`}
+              name={series.name} 
+              data={series.data} 
             >
-              {validData.map((entry, index) => (
+              {series.data.map((entry, index) => (
                 <Cell
-                  key={`cell-${index}`}
-                  fill={getColorForValue(entry.value)}
+                  key={`cell-${seriesIndex}-${index}`}
+                  fill={getColor(entry.value, valueMin, valueMax)}
+                  fillOpacity={fillOpacity}
                 />
               ))}
             </Scatter>
-          </ScatterChart>
-        </ResponsiveContainer>
-      )}
-    </ChartContainer>
+          ))}
+        </ScatterChart>
+      </ResponsiveContainer>
+    );
+  }, [
+    isValid, 
+    data, 
+    width, 
+    height, 
+    tooltip.margin, 
+    tooltip.contentStyle, 
+    tooltip.labelStyle, 
+    xAxisLabel, 
+    yAxisLabel, 
+    xAxisFormatter,
+    yAxisFormatter,
+    handleTooltip, 
+    getColor,
+    fillOpacity
+  ]);
+
+  return (
+    <BaseChart
+      title={title}
+      error={error || configError}
+      isLoading={isLoading}
+      hasError={!isValid || !!configError}
+      width={width}
+      height={height}
+      style={style}
+      className={className}
+    >
+      {chartContent}
+    </BaseChart>
   );
-};
+});
+
+HeatMapChart.displayName = 'HeatMapChart';

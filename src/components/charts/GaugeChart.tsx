@@ -1,123 +1,185 @@
-import { FC, useMemo } from 'react';
+import { memo, useMemo, useCallback } from 'react';
 import {
-  PieChart as RechartsPieChart,
+  PieChart,
   Pie,
   Cell,
   ResponsiveContainer,
+  Tooltip,
 } from 'recharts';
-import { ChartContainer } from '../ChartContainer';
 import { GaugeChartProps } from '../../types/charts';
-import { useTheme } from '../../theme/ThemeProvider';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import { BaseChart } from './BaseChart';
 import { chartUtils } from '../../utils/chartUtils';
 
-interface CustomLabelProps {
-  viewBox: {
+/**
+ * ゲージチャートコンポーネント
+ * 単一の値を視覚的なゲージとして表示します
+ */
+const START_ANGLE = 180;
+const END_ANGLE = 0;
+
+export const GaugeChart = memo(({ data, config, width, height, style, className }: GaugeChartProps) => {
+  const { colors, tooltip, formatTooltip } = useChartTheme();
+
+  // 設定から頻繁に使用される値を抽出
+  const { 
+    tooltipFormatter, 
+    chartColors, 
+    min = 0, 
+    max = 100, 
+    precision = 0, 
+    unit, 
+    title, 
+    error: configError, 
+    isLoading 
+  } = config;
+
+  // データの検証
+  const { isValid, error } = useMemo(() => 
+    chartUtils.validateChartData(data, (items) => 
+      items.every(item => item.value !== undefined && typeof item.value === 'number')
+    ),
+    [data]
+  );
+
+  // チャートデータの計算
+  const chartData = useMemo(() => {
+    if (!isValid || !data.length) return null;
+
+    const value = data[0].value;
+    const normalizedValue = Math.max(min, Math.min(max, value));
+    const percentage = ((normalizedValue - min) / (max - min)) * 100;
+
+    // 背景データ
+    const backgroundData = [{ value: 100 }];
+    // 値表示データ
+    const valueData = [{ value: percentage }];
+
+    return {
+      normalizedValue,
+      percentage,
+      backgroundData,
+      valueData
+    };
+  }, [isValid, data, min, max]);
+
+  // パーセンテージに基づく色の取得
+  const getColor = (percent: number): string => {
+    if (chartColors && chartColors.length > 0) {
+      return chartUtils.getColorByValue(percent, 0, 100, chartColors);
+    }
+
+    if (percent < 33) return colors.error;
+    if (percent < 66) return colors.warning;
+    return colors.success;
+  };
+
+  // 値ラベルのレンダリング
+  const renderValueLabel = useCallback(({
+    cx,
+    cy,
+  }: {
     cx: number;
     cy: number;
-  };
-  value: number;
-}
-
-export const GaugeChart: FC<GaugeChartProps> = ({
-  width,
-  height,
-  className,
-  style,
-  config: {
-    value,
-    min = 0,
-    max = 100,
-    title,
-    chartColors,
-    showValue = true,
-    error: propError,
-    isLoading,
-  }
-}) => {
-  const theme = useTheme();
-  const {
-    colors: { primary, error: errorColor, text },
-    typography: { fontSize }
-  } = theme;
-
-  const defaultColors = chartColors || [primary, errorColor];
-
-  const validationError = useMemo(() => {
-    if (typeof value !== 'number' || isNaN(value)) {
-      return '値が無効です';
-    }
-    if (value < min || value > max) {
-      return `値は${min}から${max}の間である必要があります`;
-    }
-    return undefined;
-  }, [value, min, max]);
-
-  const error = propError || validationError;
-  const hasError = Boolean(error);
-
-  const gaugeData = useMemo(() => {
-    const percentage = ((value - min) / (max - min)) * 100;
-    return [
-      { name: 'value', value: percentage },
-      { name: 'empty', value: 100 - percentage }
-    ];
-  }, [value, min, max]);
-
-  const renderCustomLabel = ({ viewBox: { cx, cy } }: CustomLabelProps) => {
-    const formattedValue = chartUtils.formatValue(value);
+    value: number;
+  }) => {
+    if (!chartData) return null;
+    
     return (
       <text
         x={cx}
         y={cy}
+        fill="#666"
         textAnchor="middle"
-        dominantBaseline="central"
-        fill={text}
-        fontSize={fontSize.value}
+        dominantBaseline="middle"
       >
-        {showValue ? formattedValue : ''}
+        <tspan x={cx} dy="-1em" fontSize="2em" fontWeight="bold">
+          {chartData.normalizedValue.toFixed(precision)}
+        </tspan>
+        {unit && (
+          <tspan x={cx} dy="1.5em" fontSize="1em">
+            {unit}
+          </tspan>
+        )}
       </text>
     );
-  };
+  }, [chartData, precision, unit]);
+
+  // ツールチップフォーマッター
+  const handleTooltip = useCallback((value: number, name: string, props: any) => {
+    return formatTooltip(value, name, props, tooltipFormatter);
+  }, [tooltipFormatter, formatTooltip]);
+
+  // チャートコンテンツのメモ化
+  const chartContent = useMemo(() => {
+    if (!isValid || !chartData) return null;
+
+    return (
+      <ResponsiveContainer width={width ?? '100%'} height={height ?? 400}>
+        <PieChart>
+          {/* 背景アーク */}
+          <Pie
+            data={chartData.backgroundData}
+            cx="50%"
+            cy="50%"
+            startAngle={START_ANGLE}
+            endAngle={END_ANGLE}
+            innerRadius="60%"
+            outerRadius="80%"
+            fill="#f5f5f5"
+            stroke="none"
+            dataKey="value"
+          />
+          {/* 値表示アーク */}
+          <Pie
+            data={chartData.valueData}
+            cx="50%"
+            cy="50%"
+            startAngle={START_ANGLE}
+            endAngle={START_ANGLE - ((START_ANGLE - END_ANGLE) * chartData.percentage) / 100}
+            innerRadius="60%"
+            outerRadius="80%"
+            cornerRadius={5}
+            dataKey="value"
+            label={renderValueLabel}
+            labelLine={false}
+          >
+            <Cell fill={getColor(chartData.percentage)} />
+          </Pie>
+          <Tooltip
+            formatter={handleTooltip}
+            contentStyle={tooltip.contentStyle}
+            labelStyle={tooltip.labelStyle}
+          />
+        </PieChart>
+      </ResponsiveContainer>
+    );
+  }, [
+    isValid, 
+    chartData, 
+    width, 
+    height, 
+    renderValueLabel, 
+    getColor,
+    tooltip.contentStyle,
+    tooltip.labelStyle,
+    handleTooltip
+  ]);
 
   return (
-    <ChartContainer 
+    <BaseChart
       title={title}
+      error={error || configError}
+      isLoading={isLoading}
+      hasError={!isValid || !!configError}
       width={width}
       height={height}
-      className={className} 
       style={style}
-      hasError={hasError}
-      error={error}
-      isLoading={isLoading}
+      className={className}
     >
-      {!hasError && (
-        <ResponsiveContainer width="100%" height="100%">
-          <RechartsPieChart
-            margin={{ top: theme.spacing.chart, right: theme.spacing.chart, bottom: theme.spacing.chart, left: theme.spacing.chart }}
-          >
-            <Pie
-              data={gaugeData}
-              dataKey="value"
-              startAngle={180}
-              endAngle={0}
-              innerRadius="80%"
-              outerRadius="100%"
-              cornerRadius={theme.borderRadius.small}
-              paddingAngle={0}
-              label={renderCustomLabel}
-              labelLine={false}
-              isAnimationActive={!isLoading}
-            >
-              {gaugeData.map((_entry, index) => (
-                <Cell
-                  key={`cell-${index}`}
-                  fill={defaultColors[index % defaultColors.length]}
-                />
-              ))}
-            </Pie>
-          </RechartsPieChart>
-        </ResponsiveContainer>
-      )}
-    </ChartContainer>
+      {chartContent}
+    </BaseChart>
   );
-};
+});
+
+GaugeChart.displayName = 'GaugeChart';

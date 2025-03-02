@@ -35,9 +35,19 @@ export const ResponsiveDashboard: FC<ResponsiveDashboardProps> = ({
     const handleResize = () => {
       const width = window.innerWidth;
       const breakpointEntries = Object.entries(breakpoints) as [Breakpoint, number][];
-      const newBreakpoint = breakpointEntries
-        .sort(([, a], [, b]) => b - a)
-        .find(([, value]) => width >= value)?.[0] || 'xs';
+      
+      // ブレークポイントを昇順にソート
+      const sortedBreakpoints = breakpointEntries.sort(([, a], [, b]) => a - b);
+      
+      // 現在の幅に適したブレークポイントを見つける
+      let newBreakpoint: Breakpoint = 'xs';
+      for (const [bp, minWidth] of sortedBreakpoints) {
+        if (width >= minWidth) {
+          newBreakpoint = bp;
+        } else {
+          break;
+        }
+      }
       
       setCurrentBreakpoint(newBreakpoint);
     };

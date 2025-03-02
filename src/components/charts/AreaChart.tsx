@@ -1,4 +1,4 @@
-import { FC, useMemo } from 'react';
+import { memo, useMemo, useCallback } from 'react';
 import {
   AreaChart as RechartsAreaChart,
   Area,
@@ -6,151 +6,131 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer,
+  Label,
 } from 'recharts';
-import { ChartContainer } from '../ChartContainer';
 import { AreaChartProps } from '../../types/charts';
-import { useTheme } from '../../theme/ThemeProvider';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import { BaseChart } from './BaseChart';
 import { chartUtils } from '../../utils/chartUtils';
 
-export const AreaChart: FC<AreaChartProps> = ({
-  data = [],
-  width,
-  height,
-  className,
-  style,
-  config: {
-    xAxisKey,
-    yAxisKey,
-    stackedKeys,
-    title,
-    tooltipFormatter,
-    chartColors,
+/**
+ * エリアチャートコンポーネント
+ * 連続的なデータの推移と面積を表示します
+ */
+export const AreaChart = memo(({ data, config, width, height, style, className }: AreaChartProps) => {
+  const { colors, tooltip, formatTooltip } = useChartTheme();
+
+  // 設定から頻繁に使用される値を抽出
+  const { 
+    tooltipFormatter, 
+    chartColors, 
+    xAxisLabel, 
+    yAxisLabel, 
+    smooth, 
     fillOpacity = 0.3,
-    smooth = false,
-    showLegend = false,
-    error: propError,
-    isLoading,
-  }
-}) => {
-  const theme = useTheme();
-  const {
-    colors: { primary, secondary, success, warning, text, grid },
-    typography: { fontSize }
-  } = theme;
+    title,
+    error: configError,
+    isLoading 
+  } = config;
+  
+  const primaryColor = chartColors?.[0] ?? colors.primary;
 
-  const defaultColors = chartColors || [primary, secondary, success, warning];
-
-  const { validData, error: validationError } = useMemo(() => {
-    const requiredKeys = [xAxisKey, yAxisKey];
-    const numericKeys = [yAxisKey];
-
-    if (stackedKeys) {
-      requiredKeys.push(...stackedKeys);
-      numericKeys.push(...stackedKeys);
-    }
-
-    return chartUtils.validateData(
-      data,
-      requiredKeys,
-      numericKeys
-    );
-  }, [data, xAxisKey, yAxisKey, stackedKeys]);
-
-  const hasData = validData.length > 0;
-  const error = propError || validationError;
-
-  const yDomain = useMemo(() => {
-    if (!hasData) return [0, 0];
-
-    const allValues = validData.reduce((acc, item) => {
-      if (stackedKeys) {
-        const stackSum = stackedKeys.reduce((sum, key) => sum + Number(item[key] || 0), 0);
-        acc.push(stackSum);
-      } else {
-        acc.push(Number(item[yAxisKey]));
-      }
-      return acc;
-    }, [] as number[]);
-
-    return chartUtils.calculateDomain(allValues, { padding: 0.1 });
-  }, [validData, yAxisKey, stackedKeys, hasData]);
-
-  const renderArea = (dataKey: string, index: number) => (
-    <Area
-      key={dataKey}
-      type={smooth ? "monotone" : "linear"}
-      dataKey={dataKey}
-      name={dataKey}
-      stroke={defaultColors[index % defaultColors.length]}
-      fill={defaultColors[index % defaultColors.length]}
-      fillOpacity={fillOpacity}
-      stackId={stackedKeys ? "stack" : undefined}
-      isAnimationActive={!isLoading}
-    />
+  // データの検証
+  const { isValid, error } = useMemo(() => 
+    chartUtils.validateXYData(data),
+    [data]
   );
 
-  return (
-    <ChartContainer 
-      title={title}
-      width={width}
-      height={height}
-      className={className} 
-      style={style}
-      hasError={!hasData}
-      error={error}
-      isLoading={isLoading}
-    >
-      {hasData && (
-        <ResponsiveContainer width="100%" height="100%">
-          <RechartsAreaChart
-            data={validData}
-            margin={{ top: theme.spacing.chart, right: theme.spacing.chart, bottom: theme.spacing.chart, left: theme.spacing.chart }}
+  // ツールチップフォーマッター
+  const handleTooltip = useCallback((value: number, name: string, props: any) => {
+    return formatTooltip(value, name, props, tooltipFormatter);
+  }, [tooltipFormatter, formatTooltip]);
+
+  // チャートコンテンツのメモ化
+  const chartContent = useMemo(() => {
+    if (!isValid) return null;
+
+    return (
+      <ResponsiveContainer width={width ?? '100%'} height={height ?? 400}>
+        <RechartsAreaChart
+          data={data}
+          margin={tooltip.margin}
+        >
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis
+            type="category"
+            dataKey="x"
+            name="X"
+            allowDuplicatedCategory={false}
+            interval={0}
           >
-            <CartesianGrid 
-              strokeDasharray="3 3" 
-              stroke={grid} 
-            />
-            <XAxis
-              dataKey={xAxisKey}
-              stroke={text}
-              fontSize={fontSize.label}
-            />
-            <YAxis
-              domain={yDomain}
-              stroke={text}
-              fontSize={fontSize.label}
-            />
-            <Tooltip
-              content={({ active, payload }) => {
-                if (!active || !payload || !payload.length) return null;
-
-                const data = payload[0].payload as { name: string; value: number };
-                const formattedValue = tooltipFormatter
-                  ? tooltipFormatter(data.value, data.name, { value: data.value, name: data.name, dataKey: 'value', payload: data })
-                  : chartUtils.formatValue(data.value);
-
-                return (
-                  <div className="custom-tooltip">
-                    <p>{`${data.name}: ${formattedValue}`}</p>
-                  </div>
-                );
-              }}
-              contentStyle={chartUtils.getTooltipStyle(theme)}
-            />
-            {showLegend && (
-              <Legend
-                wrapperStyle={chartUtils.getLegendStyle(theme)}
+            {xAxisLabel && (
+              <Label
+                value={xAxisLabel}
+                position="bottom"
+                offset={-5}
               />
             )}
-            {stackedKeys
-              ? stackedKeys.map((key, index) => renderArea(key, index))
-              : renderArea(yAxisKey, 0)
-            }
-          </RechartsAreaChart>
-        </ResponsiveContainer>
-      )}
-    </ChartContainer>
+          </XAxis>
+          <YAxis
+            type="number"
+            name="Y"
+          >
+            {yAxisLabel && (
+              <Label
+                value={yAxisLabel}
+                position="insideLeft"
+                angle={-90}
+                style={{ textAnchor: 'middle' }}
+              />
+            )}
+          </YAxis>
+          <Tooltip
+            formatter={handleTooltip}
+            contentStyle={tooltip.contentStyle}
+            labelStyle={tooltip.labelStyle}
+          />
+          <Area
+            type={smooth ? "monotone" : "linear"}
+            dataKey="y"
+            stroke={primaryColor}
+            fill={primaryColor}
+            fillOpacity={fillOpacity}
+          />
+        </RechartsAreaChart>
+      </ResponsiveContainer>
+    );
+  }, [
+    isValid, 
+    data, 
+    width, 
+    height, 
+    tooltip.margin, 
+    tooltip.contentStyle, 
+    tooltip.labelStyle, 
+    xAxisLabel, 
+    yAxisLabel, 
+    handleTooltip, 
+    smooth, 
+    primaryColor, 
+    fillOpacity
+  ]);
+
+  return (
+    <BaseChart
+      title={title}
+      error={error || configError}
+      isLoading={isLoading}
+      hasError={!isValid || !!configError}
+      width={width}
+      height={height}
+      style={style}
+      className={className}
+    >
+      {chartContent}
+    </BaseChart>
   );
-};
+});
+
+AreaChart.displayName = 'AreaChart';

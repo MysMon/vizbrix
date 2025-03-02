@@ -1,55 +1,21 @@
 import { ReactNode, CSSProperties } from 'react';
 import { Layout } from 'react-grid-layout';
 import {
-  LineChartConfig,
-  BarChartConfig,
-  PieChartConfig,
-  AreaChartConfig,
-  ScatterChartConfig,
-  RadarChartConfig,
-  ComposedChartConfig,
-  GaugeChartConfig,
-  TreemapChartConfig,
-  FunnelChartConfig,
-  CandlestickChartConfig,
-  SankeyChartConfig,
-  HeatMapChartConfig,
+  ChartConfig,
+  XYDataPoint,
+  NameValueDataPoint,
+  TreemapDataPoint,
+  CandlestickDataPoint,
+  SankeyChartData,
+  HeatMapSeries,
 } from './charts';
-
-export type ChartType =
-  | 'line'
-  | 'bar'
-  | 'pie'
-  | 'area'
-  | 'scatter'
-  | 'radar'
-  | 'composed'
-  | 'gauge'
-  | 'treemap'
-  | 'funnel'
-  | 'candlestick'
-  | 'sankey'
-  | 'heatmap';
-
-export type ChartConfig =
-  | ({ type: 'line' } & LineChartConfig)
-  | ({ type: 'bar' } & BarChartConfig)
-  | ({ type: 'pie' } & PieChartConfig)
-  | ({ type: 'area' } & AreaChartConfig)
-  | ({ type: 'scatter' } & ScatterChartConfig)
-  | ({ type: 'radar' } & RadarChartConfig)
-  | ({ type: 'composed' } & ComposedChartConfig)
-  | ({ type: 'gauge' } & GaugeChartConfig)
-  | ({ type: 'treemap' } & TreemapChartConfig)
-  | ({ type: 'funnel' } & FunnelChartConfig)
-  | ({ type: 'candlestick' } & CandlestickChartConfig)
-  | ({ type: 'sankey' } & SankeyChartConfig)
-  | ({ type: 'heatmap' } & HeatMapChartConfig);
+import { ChartError } from './common';
 
 export interface DashboardItemProps extends Layout {
   id: string;
   title: string;
   chartConfig: ChartConfig;
+  data: XYDataPoint[] | NameValueDataPoint[] | TreemapDataPoint[] | CandlestickDataPoint[] | SankeyChartData | HeatMapSeries[];
 }
 
 export interface DashboardProps {
@@ -60,6 +26,7 @@ export interface DashboardProps {
   isDraggable?: boolean;
   isResizable?: boolean;
   onLayoutChange?: (layout: Layout[]) => void;
+  onError?: (error: ChartError) => void;
 }
 
 export interface ChartContainerProps {
@@ -71,4 +38,4 @@ export interface ChartContainerProps {
   isLoading?: boolean;
   hasError?: boolean;
   isDraggable?: boolean;
-} 
+}

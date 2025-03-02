@@ -1,210 +1,192 @@
-import { FC, useMemo } from 'react';
+import { useMemo, useCallback, memo } from 'react';
 import {
   ComposedChart,
-  Bar,
   Line,
+  Bar,
   XAxis,
   YAxis,
+  CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Cell,
 } from 'recharts';
-import { TooltipProps as RechartsTooltipProps } from 'recharts';
-import { ChartContainer } from '../ChartContainer';
-import { CandlestickChartProps } from '../../types/charts';
-import { useTheme } from '../../theme/ThemeProvider';
+import { CandlestickChartProps} from '../../types/charts';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import { BaseChart } from './BaseChart';
 import { chartUtils } from '../../utils/chartUtils';
 
-interface CandlestickData {
-  date: string | number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  color: string;
-  wickColor: string;
+/**
+ * ローソク足チャートコンポーネント
+ * 株価や為替などの時系列データを表示します
+ */
+interface CandleBarData {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  stroke?: string;
+  index: number;
+  payload: {
+    isPositive: boolean;
+    candleHeight: number;
+    candleY: number;
+    date: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+  };
 }
 
-export const CandlestickChart: FC<CandlestickChartProps> = ({
-  data = [],
-  width,
-  height,
-  className,
-  style,
-  config: {
+export const CandlestickChart = memo(({ 
+  data, 
+  config, 
+  width, 
+  height, 
+  style, 
+  className 
+}: CandlestickChartProps) => {
+  const { tooltip, formatTooltip } = useChartTheme();
+
+  // 設定から頻繁に使用される値を抽出
+  const { 
+    tooltipFormatter, 
+    xAxisLabel, 
+    yAxisLabel, 
+    upColor = '#4caf50', 
+    downColor = '#ef5350',
     title,
-    tooltipFormatter,
-    upColor,
-    downColor,
-    error: propError,
-    isLoading,
-  }
-}) => {
-  const theme = useTheme();
-  const {
-    colors: { success, error: errorColor, text },
-    typography: { fontSize }
-  } = theme;
+    error: configError,
+    isLoading
+  } = config;
 
-  const defaultUpColor = upColor || success;
-  const defaultDownColor = downColor || errorColor;
+  // データの検証
+  const { isValid, error } = useMemo(() => 
+    chartUtils.validateCandlestickData(data),
+    [data]
+  );
 
-  const { validData, error: validationError } = useMemo(() => {
-    if (!Array.isArray(data)) {
-      return {
-        validData: [],
-        error: 'データの形式が正しくありません'
-      };
-    }
+  // ツールチップフォーマッター
+  const handleTooltip = useCallback((value: number, name: string, props: any) => {
+    return formatTooltip(value, name, props, tooltipFormatter);
+  }, [tooltipFormatter, formatTooltip]);
 
-    const validPoints = data.filter(point => 
-      typeof point === 'object' &&
-      point !== null &&
-      'date' in point &&
-      'open' in point &&
-      'high' in point &&
-      'low' in point &&
-      'close' in point &&
-      !isNaN(Number(point.open)) &&
-      !isNaN(Number(point.high)) &&
-      !isNaN(Number(point.low)) &&
-      !isNaN(Number(point.close))
-    );
-
-    if (validPoints.length === 0) {
-      return {
-        validData: [],
-        error: 'データが見つかりません'
-      };
-    }
-
-    const processedData: CandlestickData[] = validPoints.map(point => {
-      const open = Number(point.open);
-      const close = Number(point.close);
-      const isUp = close >= open;
-
-      return {
-        ...point,
-        open,
-        high: Number(point.high),
-        low: Number(point.low),
-        close,
-        color: isUp ? defaultUpColor : defaultDownColor,
-        wickColor: isUp ? defaultUpColor : defaultDownColor,
-      };
-    });
-
-    return {
-      validData: processedData,
-      error: undefined
-    };
-  }, [data, defaultUpColor, defaultDownColor]);
-
-  const hasData = validData.length > 0;
-  const error = propError || validationError;
-
-  const { yDomain } = useMemo(() => {
-    if (!hasData) return { yDomain: [0, 0] };
-
-    const allValues = validData.reduce((acc, point) => {
-      acc.push(point.high, point.low);
-      return acc;
-    }, [] as number[]);
-
-    const [min, max] = chartUtils.calculateDomain(allValues, { padding: 0.1 });
-
-    return {
-      yDomain: [min, max],
-    };
-  }, [validData, hasData]);
-
-  const renderTooltipContent = (props: RechartsTooltipProps<number, string>) => {
-    if (!props.payload || !props.payload[0]) return null;
-
-    const data = props.payload[0].payload as CandlestickData;
-    const formattedValues = {
-      open: tooltipFormatter ? tooltipFormatter(data.open, '始値', { value: data.open, name: '始値', dataKey: 'open', payload: data }) : chartUtils.formatValue(data.open),
-      high: tooltipFormatter ? tooltipFormatter(data.high, '高値', { value: data.high, name: '高値', dataKey: 'high', payload: data }) : chartUtils.formatValue(data.high),
-      low: tooltipFormatter ? tooltipFormatter(data.low, '安値', { value: data.low, name: '安値', dataKey: 'low', payload: data }) : chartUtils.formatValue(data.low),
-      close: tooltipFormatter ? tooltipFormatter(data.close, '終値', { value: data.close, name: '終値', dataKey: 'close', payload: data }) : chartUtils.formatValue(data.close),
-    };
+  // カスタムバーレンダリング
+  const renderCandlestick = useCallback((props: unknown) => {
+    const {
+      x = 0,
+      y = 0,
+      width = 0,
+      height = 0,
+      payload = { isPositive: true }
+    } = props as CandleBarData;
+    
+    const barWidth = Math.max(1, width);
+    const color = payload.isPositive ? upColor : downColor;
 
     return (
-      <div style={chartUtils.getTooltipStyle(theme)}>
-        <p style={{ margin: '0 0 5px' }}>日付: {data.date}</p>
-        <p style={{ margin: '0 0 5px' }}>始値: {formattedValues.open}</p>
-        <p style={{ margin: '0 0 5px' }}>高値: {formattedValues.high}</p>
-        <p style={{ margin: '0 0 5px' }}>安値: {formattedValues.low}</p>
-        <p style={{ margin: '0' }}>終値: {formattedValues.close}</p>
-      </div>
+      <path
+        d={`M${x - barWidth / 2},${y}h${barWidth}v${height}h-${barWidth}Z`}
+        stroke={color}
+        fill={color}
+      />
     );
-  };
+  }, [upColor, downColor]);
+
+  // データの加工
+  const processedData = useMemo(() => {
+    if (!isValid) return [];
+    
+    return data.map(item => ({
+      ...item,
+      candleHeight: Math.abs(item.open - item.close),
+      candleY: Math.min(item.open, item.close),
+      isPositive: item.close >= item.open,
+    }));
+  }, [data, isValid]);
+
+  // チャートコンテンツのメモ化
+  const chartContent = useMemo(() => {
+    if (!isValid) return null;
+
+    return (
+      <ResponsiveContainer width={width ?? '100%'} height={height ?? 400}>
+        <ComposedChart
+          data={processedData}
+          margin={tooltip.margin}
+        >
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis
+            dataKey="date"
+            scale="band"
+            label={xAxisLabel ? {
+              value: xAxisLabel,
+              position: 'bottom',
+              offset: -5
+            } : undefined}
+          />
+          <YAxis
+            domain={['dataMin', 'dataMax']}
+            label={yAxisLabel ? {
+              value: yAxisLabel,
+              angle: -90,
+              position: 'insideLeft'
+            } : undefined}
+          />
+          <Tooltip
+            formatter={handleTooltip}
+            contentStyle={tooltip.contentStyle}
+            labelStyle={tooltip.labelStyle}
+          />
+          <Bar
+            dataKey="candleHeight"
+            shape={renderCandlestick}
+            isAnimationActive={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="high"
+            stroke="#666"
+            dot={false}
+            isAnimationActive={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="low"
+            stroke="#666"
+            dot={false}
+            isAnimationActive={false}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    );
+  }, [
+    isValid, 
+    processedData, 
+    width, 
+    height, 
+    tooltip.margin, 
+    tooltip.contentStyle, 
+    tooltip.labelStyle,
+    xAxisLabel, 
+    yAxisLabel, 
+    handleTooltip, 
+    renderCandlestick
+  ]);
 
   return (
-    <ChartContainer 
+    <BaseChart
       title={title}
+      error={error || configError}
+      isLoading={isLoading}
+      hasError={!isValid || !!configError}
       width={width}
       height={height}
-      className={className} 
       style={style}
-      hasError={!hasData}
-      error={error}
-      isLoading={isLoading}
+      className={className}
     >
-      {hasData && (
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart
-            data={validData}
-            margin={{ top: theme.spacing.chart, right: theme.spacing.chart, bottom: theme.spacing.chart, left: theme.spacing.chart }}
-          >
-            <XAxis
-              dataKey="date"
-              stroke={text}
-              fontSize={fontSize.label}
-            />
-            <YAxis
-              domain={yDomain}
-              stroke={text}
-              fontSize={fontSize.label}
-            />
-            <Tooltip content={renderTooltipContent} />
-            <Bar
-              dataKey="open"
-              fill="transparent"
-              stroke="none"
-              isAnimationActive={!isLoading}
-            />
-            <Bar
-              dataKey="close"
-              fill={defaultDownColor}
-              fillOpacity={0}
-              stroke="none"
-              isAnimationActive={!isLoading}
-            >
-              {validData.map((entry, index) => (
-                <Cell
-                  key={`cell-${index}`}
-                  fill={entry.color}
-                />
-              ))}
-            </Bar>
-            <Line
-              type="monotone"
-              dataKey="high"
-              stroke={defaultUpColor}
-              dot={false}
-              isAnimationActive={!isLoading}
-            />
-            <Line
-              type="monotone"
-              dataKey="low"
-              stroke={defaultDownColor}
-              dot={false}
-              isAnimationActive={!isLoading}
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
-      )}
-    </ChartContainer>
+      {chartContent}
+    </BaseChart>
   );
-};
+});
+
+CandlestickChart.displayName = 'CandlestickChart';

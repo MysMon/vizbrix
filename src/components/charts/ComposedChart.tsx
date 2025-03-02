@@ -1,4 +1,4 @@
-import { FC, useMemo } from 'react';
+import { memo, useMemo, useCallback } from 'react';
 import {
   ComposedChart as RechartsComposedChart,
   Line,
@@ -11,75 +11,56 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { ChartContainer } from '../ChartContainer';
 import { ComposedChartProps } from '../../types/charts';
-import { TooltipProps as RechartsTooltipProps } from 'recharts';
-import { useTheme } from '../../theme/ThemeProvider';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import { BaseChart } from './BaseChart';
 import { chartUtils } from '../../utils/chartUtils';
 
-export const ComposedChart: FC<ComposedChartProps> = ({
-  data = [],
-  width,
-  height,
-  className,
-  style,
-  config: {
-    xAxisKey,
-    yAxisKey,
-    series,
+/**
+ * 複合チャートコンポーネント
+ * 複数の異なるチャートタイプ（ライン、バー、エリア）を1つのチャートに表示します
+ */
+export const ComposedChart = memo(({ data, config, width, height, style, className }: ComposedChartProps) => {
+  const { colors, tooltip, formatTooltip } = useChartTheme();
+
+  // 設定から頻繁に使用される値を抽出
+  const { 
+    tooltipFormatter, 
+    chartColors, 
+    series, 
+    xAxisKey, 
+    xAxisLabel, 
+    yAxisLabel, 
+    showLegend,
     title,
-    tooltipFormatter,
-    chartColors,
-    showLegend = false,
-    error: propError,
-    isLoading,
-  }
-}) => {
-  const theme = useTheme();
-  const {
-    colors: { primary, secondary, success, warning, text, grid },
-    typography: { fontSize }
-  } = theme;
+    error: configError,
+    isLoading
+  } = config;
 
-  const defaultColors = chartColors || [primary, secondary, success, warning];
+  // データの検証
+  const { isValid, error } = useMemo(() => 
+    chartUtils.validateChartData(data, (items) => 
+      items.every(item => 
+        item.x !== undefined && 
+        series.every(s => typeof item[s.dataKey] === 'number')
+      )
+    ),
+    [data, series]
+  );
 
-  const { validData, error: validationError } = useMemo(() => {
-    const dataKeys = series.map(s => s.dataKey);
-    const requiredKeys = [xAxisKey, yAxisKey, ...dataKeys];
-    const numericKeys = [yAxisKey, ...dataKeys];
+  // ツールチップフォーマッター
+  const handleTooltip = useCallback((value: number, name: string, props: any) => {
+    return formatTooltip(value, name, props, tooltipFormatter);
+  }, [tooltipFormatter, formatTooltip]);
 
-    return chartUtils.validateData(
-      data,
-      requiredKeys,
-      numericKeys
-    );
-  }, [data, xAxisKey, yAxisKey, series]);
-
-  const hasData = validData.length > 0;
-  const error = propError || validationError;
-
-  const yDomain = useMemo(() => {
-    if (!hasData) return [0, 0];
-
-    const allValues = validData.reduce((acc, item) => {
-      series.forEach(s => {
-        acc.push(Number(item[s.dataKey]));
-      });
-      return acc;
-    }, [] as number[]);
-
-    return chartUtils.calculateDomain(allValues, { padding: 0.1 });
-  }, [validData, series, hasData]);
-
-  const renderChartComponent = (seriesItem: typeof series[0], index: number) => {
-    const color = defaultColors[index % defaultColors.length];
+  // タイプに応じたチャートコンポーネントのレンダリング
+  const renderChartComponent = useCallback((seriesItem: typeof series[number], index: number) => {
+    const seriesColor = chartUtils.getChartColor(chartColors, index, colors.primary);
     const commonProps = {
       key: seriesItem.dataKey,
-      name: seriesItem.name || seriesItem.dataKey,
+      name: seriesItem.name ?? seriesItem.dataKey,
       dataKey: seriesItem.dataKey,
-      stroke: color,
-      fill: color,
-      isAnimationActive: !isLoading,
+      stroke: seriesColor,
     };
 
     switch (seriesItem.type) {
@@ -87,96 +68,104 @@ export const ComposedChart: FC<ComposedChartProps> = ({
         return (
           <Line
             {...commonProps}
+            type="monotone"
             dot={false}
-            strokeWidth={2}
+            activeDot={{ r: 8 }}
           />
         );
       case 'bar':
         return (
           <Bar
             {...commonProps}
-            fillOpacity={0.8}
+            fill={seriesColor}
           />
         );
       case 'area':
         return (
           <Area
             {...commonProps}
-            fillOpacity={0.3}
-            strokeWidth={2}
+            type="monotone"
+            fill={seriesColor}
+            fillOpacity={0.6}
           />
         );
       default:
         return null;
     }
-  };
+  }, [chartColors, colors.primary]);
+
+  // チャートコンテンツのメモ化
+  const chartContent = useMemo(() => {
+    if (!isValid) return null;
+
+    return (
+      <ResponsiveContainer width={width ?? '100%'} height={height ?? 400}>
+        <RechartsComposedChart
+          data={data}
+          margin={tooltip.margin}
+        >
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis
+            dataKey={xAxisKey}
+            label={xAxisLabel ? {
+              value: xAxisLabel,
+              position: 'bottom',
+              offset: -5
+            } : undefined}
+          />
+          <YAxis
+            label={yAxisLabel ? {
+              value: yAxisLabel,
+              angle: -90,
+              position: 'insideLeft'
+            } : undefined}
+          />
+          <Tooltip
+            formatter={handleTooltip}
+            contentStyle={tooltip.contentStyle}
+            labelStyle={tooltip.labelStyle}
+          />
+          {showLegend && (
+            <Legend
+              align="center"
+              verticalAlign="bottom"
+            />
+          )}
+          {series.map((seriesItem, index) => renderChartComponent(seriesItem, index))}
+        </RechartsComposedChart>
+      </ResponsiveContainer>
+    );
+  }, [
+    isValid, 
+    data, 
+    width, 
+    height, 
+    tooltip.margin, 
+    tooltip.contentStyle, 
+    tooltip.labelStyle, 
+    xAxisKey, 
+    xAxisLabel, 
+    yAxisLabel, 
+    showLegend, 
+    handleTooltip, 
+    series, 
+    renderChartComponent
+  ]);
 
   return (
-    <ChartContainer 
+    <BaseChart
       title={title}
+      error={error || configError}
+      isLoading={isLoading}
+      hasError={!isValid || !!configError}
       width={width}
       height={height}
-      className={className} 
       style={style}
-      hasError={!hasData}
-      error={error}
-      isLoading={isLoading}
+      className={className}
     >
-      {hasData && (
-        <ResponsiveContainer width="100%" height="100%">
-          <RechartsComposedChart
-            data={validData}
-            margin={{ top: theme.spacing.chart, right: theme.spacing.chart, bottom: theme.spacing.chart, left: theme.spacing.chart }}
-          >
-            <CartesianGrid 
-              strokeDasharray="3 3" 
-              stroke={grid} 
-            />
-            <XAxis
-              dataKey={xAxisKey}
-              stroke={text}
-              fontSize={fontSize.label}
-            />
-            <YAxis
-              domain={yDomain}
-              stroke={text}
-              fontSize={fontSize.label}
-            />
-            <Tooltip
-              content={(props: RechartsTooltipProps<number, string>) => {
-                const { active, payload, label } = props;
-                if (!active || !payload || !payload.length) return null;
-
-                return (
-                  <div className="custom-tooltip">
-                    <p style={{ margin: '0 0 5px' }}>{label}</p>
-                    {payload.map((entry, index) => {
-                      const value = Number(entry.value);
-                      const name = entry.name || String(entry.dataKey);
-                      const formattedValue = tooltipFormatter
-                        ? tooltipFormatter(value, name, { value, name, dataKey: String(entry.dataKey), payload: entry.payload })
-                        : chartUtils.formatValue(value);
-
-                      return (
-                        <p key={index} style={{ color: entry.color, margin: '3px 0' }}>
-                          {`${name}: ${formattedValue}`}
-                        </p>
-                      );
-                    })}
-                  </div>
-                );
-              }}
-              contentStyle={chartUtils.getTooltipStyle(theme)}
-            />
-            {showLegend && (
-              <Legend
-                wrapperStyle={chartUtils.getLegendStyle(theme)}
-              />
-            )}
-            {series.map((item, index) => renderChartComponent(item, index))}
-          </RechartsComposedChart>
-        </ResponsiveContainer>
-      )}
-    </ChartContainer>
+      {chartContent}
+    </BaseChart>
   );
-};
+});
+
+ComposedChart.displayName = 'ComposedChart';

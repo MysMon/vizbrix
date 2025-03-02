@@ -1,145 +1,135 @@
-import { FC, useMemo } from 'react';
+import { memo, useMemo, useCallback } from 'react';
 import {
   PieChart as RechartsPieChart,
   Pie,
   Cell,
   Tooltip,
-  ResponsiveContainer,
   Legend,
+  ResponsiveContainer,
 } from 'recharts';
-import { ChartContainer } from '../ChartContainer';
 import { PieChartProps } from '../../types/charts';
-import { useTheme } from '../../theme/ThemeProvider';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import { BaseChart } from './BaseChart';
 import { chartUtils } from '../../utils/chartUtils';
 
-interface CustomLabelProps {
-  cx: number;
-  cy: number;
-  midAngle: number;
-  innerRadius: number;
-  outerRadius: number;
-  percent: number;
-}
+/**
+ * 円グラフコンポーネント
+ * カテゴリ別の割合やシェアを円形で表示します
+ */
+export const PieChart = memo(({ data, config, width, height, style, className }: PieChartProps) => {
+  const { colors, tooltip, formatTooltip, getColor } = useChartTheme();
 
-export const PieChart: FC<PieChartProps> = ({
-  data = [],
-  width,
-  height,
-  className,
-  style,
-  config: {
-    nameKey,
-    valueKey,
-    title,
-    tooltipFormatter,
-    chartColors,
-    showLegend = false,
+  // 設定から頻繁に使用される値を抽出
+  const { 
+    tooltipFormatter, 
+    chartColors, 
+    showLegend,
     innerRadius = 0,
     outerRadius = '80%',
+    nameKey = 'name',
+    valueKey = 'value',
     labelLine = true,
-    error: propError,
-    isLoading,
-  }
-}) => {
-  const theme = useTheme();
-  const {
-    colors: { primary, secondary, success, warning, text },
-    typography: { fontSize }
-  } = theme;
+    title,
+    error: configError,
+    isLoading
+  } = config;
 
-  const defaultColors = chartColors || [primary, secondary, success, warning];
+  // データの検証
+  const { isValid, error } = useMemo(() => 
+    chartUtils.validateNameValueData(data),
+    [data]
+  );
 
-  const { validData, error: validationError } = useMemo(() => 
-    chartUtils.validateData(
-      data,
-      [nameKey, valueKey],
-      [valueKey]
-    ),
-  [data, nameKey, valueKey]);
+  // ツールチップフォーマッター
+  const handleTooltip = useCallback((value: number, name: string, props: any) => {
+    return formatTooltip(value, name, props, tooltipFormatter);
+  }, [tooltipFormatter, formatTooltip]);
 
-  const hasData = validData.length > 0;
-  const error = propError || validationError;
+  // チャートコンテンツのメモ化
+  const chartContent = useMemo(() => {
+    if (!isValid) return null;
 
-  const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: CustomLabelProps) => {
-    const RADIAN = Math.PI / 180;
-    const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
-    const x = cx + radius * Math.cos(-midAngle * RADIAN);
-    const y = cy + radius * Math.sin(-midAngle * RADIAN);
+    const defaultColors = [
+      colors.primary,
+      colors.secondary,
+      colors.success,
+      colors.warning,
+      colors.error,
+    ];
+
+    const pieColors = chartColors || defaultColors;
 
     return (
-      <text
-        x={x}
-        y={y}
-        fill={text}
-        fontSize={fontSize.label}
-        textAnchor="middle"
-        dominantBaseline="central"
-      >
-        {`${(percent * 100).toFixed(0)}%`}
-      </text>
+      <ResponsiveContainer width={width ?? '100%'} height={height ?? 400}>
+        <RechartsPieChart
+          margin={tooltip.margin}
+        >
+          <Tooltip
+            formatter={handleTooltip}
+            contentStyle={tooltip.contentStyle}
+            labelStyle={tooltip.labelStyle}
+          />
+          {showLegend && (
+            <Legend
+              align="center"
+              verticalAlign="bottom"
+            />
+          )}
+          <Pie
+            data={data}
+            cx="50%"
+            cy="50%"
+            innerRadius={innerRadius}
+            outerRadius={outerRadius}
+            fill={colors.primary}
+            nameKey={nameKey}
+            dataKey={valueKey}
+            labelLine={labelLine}
+          >
+            {data.map((_entry, index) => (
+              <Cell
+                key={`cell-${index}`}
+                fill={getColor(index, pieColors)}
+              />
+            ))}
+          </Pie>
+        </RechartsPieChart>
+      </ResponsiveContainer>
     );
-  };
+  }, [
+    isValid, 
+    data, 
+    width, 
+    height, 
+    tooltip.margin, 
+    tooltip.contentStyle, 
+    tooltip.labelStyle, 
+    showLegend, 
+    innerRadius, 
+    outerRadius, 
+    nameKey, 
+    valueKey, 
+    labelLine, 
+    handleTooltip,
+    getColor,
+    chartColors,
+    colors.primary
+  ]);
 
   return (
-    <ChartContainer 
+    <BaseChart
       title={title}
+      error={error || configError}
+      isLoading={isLoading}
+      hasError={!isValid || !!configError}
       width={width}
       height={height}
-      className={className} 
       style={style}
-      hasError={!hasData}
-      error={error}
-      isLoading={isLoading}
+      className={className}
     >
-      {hasData && (
-        <ResponsiveContainer width="100%" height="100%">
-          <RechartsPieChart
-            margin={{ top: theme.spacing.chart, right: theme.spacing.chart, bottom: theme.spacing.chart, left: theme.spacing.chart }}
-          >
-            <Pie
-              data={validData}
-              dataKey={valueKey}
-              nameKey={nameKey}
-              cx="50%"
-              cy="50%"
-              innerRadius={innerRadius}
-              outerRadius={outerRadius}
-              labelLine={labelLine}
-              label={renderCustomizedLabel}
-              isAnimationActive={!isLoading}
-            >
-              {validData.map((_, index) => (
-                <Cell
-                  key={`cell-${index}`}
-                  fill={defaultColors[index % defaultColors.length]}
-                />
-              ))}
-            </Pie>
-            <Tooltip
-              content={({ active, payload }) => {
-                if (!active || !payload || !payload.length) return null;
-
-                const data = payload[0].payload;
-                const formattedValue = tooltipFormatter
-                  ? tooltipFormatter(data.value, data.name, { value: data.value, name: data.name, dataKey: valueKey, payload: data })
-                  : chartUtils.formatValue(data.value);
-
-                return (
-                  <div className="custom-tooltip">
-                    <p>{`${data.name}: ${formattedValue}`}</p>
-                  </div>
-                );
-              }}
-              contentStyle={chartUtils.getTooltipStyle(theme)}
-            />
-            {showLegend && (
-              <Legend
-                wrapperStyle={chartUtils.getLegendStyle(theme)}
-              />
-            )}
-          </RechartsPieChart>
-        </ResponsiveContainer>
-      )}
-    </ChartContainer>
+      {chartContent}
+    </BaseChart>
   );
-};
+});
+
+PieChart.displayName = 'PieChart';

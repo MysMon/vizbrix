@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, FC } from 'react';
+import { useRef, useState, useEffect, FC, useCallback } from 'react';
 import styled from '@emotion/styled';
 import GridLayout, { Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
@@ -6,6 +6,9 @@ import '../styles/resizable.css';
 import { DashboardProps } from '../types/dashboard';
 import { ChartFactory } from './charts/ChartFactory';
 import { ChartErrorBoundary } from './ErrorBoundary';
+import { debounce } from '../utils/performance';
+import { ChartConfig } from '../types/charts';
+import { DashboardItemProps } from '../types/dashboard';
 
 const DashboardContainer = styled.div<{ gap: number }>`
   padding: ${props => props.gap}px;
@@ -39,48 +42,76 @@ export const Dashboard: FC<DashboardProps> = ({
   isDraggable = true,
   isResizable = true,
   onLayoutChange,
+  onError,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState<number>(1200);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const updateWidth = () => {
-      if (containerRef.current) {
-        setContainerWidth(containerRef.current.offsetWidth);
-      }
-    };
-
-    updateWidth();
-    window.addEventListener('resize', updateWidth);
-    
-    return () => {
-      window.removeEventListener('resize', updateWidth);
-    };
+  const updateWidth = useCallback(() => {
+    if (containerRef.current) {
+      setContainerWidth(containerRef.current.offsetWidth);
+    }
   }, []);
 
-  const handleLayoutChange = (newLayout: Layout[]) => {
+  const debouncedUpdateWidth = useCallback(
+    debounce(updateWidth, 200),
+    [updateWidth]
+  );
+
+  useEffect(() => {
+    updateWidth();
+    
+    window.addEventListener('resize', debouncedUpdateWidth);
+    
+    return () => {
+      window.removeEventListener('resize', debouncedUpdateWidth);
+    };
+  }, [updateWidth, debouncedUpdateWidth]);
+
+  const handleLayoutChange = useCallback((newLayout: Layout[]) => {
     if (onLayoutChange) {
       try {
         onLayoutChange(newLayout);
       } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : '不明なエラーが発生しました';
         console.error('Layout change error:', error);
+        setError(errorMessage);
+        
+        if (onError) {
+          onError({
+            code: 'LAYOUT_CHANGE_ERROR',
+            message: errorMessage,
+            level: 'error',
+            details: error,
+          });
+        }
       }
     }
-  };
+  }, [onLayoutChange, onError]);
 
   if (!Array.isArray(items)) {
-    return (
-      <ErrorMessage>
-        ダッシュボードアイテムの形式が正しくありません
-      </ErrorMessage>
-    );
+    const errorMessage = 'ダッシュボードアイテムの形式が正しくありません';
+    
+    if (onError) {
+      onError({
+        code: 'INVALID_ITEMS_FORMAT',
+        message: errorMessage,
+        level: 'error',
+      });
+    }
+    
+    return <ErrorMessage>{errorMessage}</ErrorMessage>;
   }
+
+  const layoutItems = items as DashboardItemProps[];
 
   return (
     <DashboardContainer gap={gap} ref={containerRef}>
+      {error && <ErrorMessage>{error}</ErrorMessage>}
       <GridLayout
         className="layout"
-        layout={items}
+        layout={layoutItems}
         cols={columns}
         rowHeight={rowHeight}
         width={containerWidth}
@@ -91,11 +122,11 @@ export const Dashboard: FC<DashboardProps> = ({
         onLayoutChange={handleLayoutChange}
         draggableHandle=".chart-drag-handle"
       >
-        {items.map((item) => (
+        {layoutItems.map((item) => (
           <div key={item.id}>
-            <ChartErrorBoundary>
+            <ChartErrorBoundary onError={onError}>
               <ChartFactory
-                config={item.chartConfig}
+                config={item.chartConfig as ChartConfig}
               />
             </ChartErrorBoundary>
           </div>

@@ -12,13 +12,23 @@ interface AggregateConfig {
   aggregation?: 'sum' | 'average' | 'max' | 'min';
 }
 
+// 条件付き型を使用して、groupByが指定されているかどうかに基づいて戻り値の型を決定
+type TransformResult<T, C extends TransformConfig<T>> = 
+  C extends { groupBy: keyof T } ? GroupedData<T>[] : T[];
+
 export const dataUtils = {
-  transformData<T extends Record<string, unknown>>(
+  /**
+   * データを変換するユーティリティ関数
+   * @param data 変換するデータ配列
+   * @param config 変換設定
+   * @returns 変換されたデータ
+   */
+  transformData<T extends Record<string, unknown>, C extends TransformConfig<T>>(
     data: T[],
-    config: TransformConfig<T>
-  ): T[] | GroupedData<T>[] {
+    config: C
+  ): TransformResult<T, C> {
     if (!Array.isArray(data)) {
-      return [];
+      return [] as TransformResult<T, C>;
     }
 
     let result = [...data];
@@ -54,7 +64,7 @@ export const dataUtils = {
         });
       }
 
-      return groupedResult;
+      return groupedResult as unknown as TransformResult<T, C>;
     }
 
     if (config.sortBy) {
@@ -65,7 +75,7 @@ export const dataUtils = {
       });
     }
 
-    return result;
+    return result as unknown as TransformResult<T, C>;
   },
 
   aggregateData<T extends Record<string, unknown>>(

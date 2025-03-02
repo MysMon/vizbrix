@@ -1,4 +1,4 @@
-import { FC, useMemo } from 'react';
+import { memo, useMemo, useCallback } from 'react';
 import {
   LineChart as RechartsLineChart,
   Line,
@@ -6,144 +6,132 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  ResponsiveContainer,
   Legend,
+  ResponsiveContainer,
 } from 'recharts';
-import { ChartContainer } from '../ChartContainer';
-import { LineChartProps, TooltipProps } from '../../types/charts';
-import { useTheme } from '../../theme/ThemeProvider';
+import { LineChartProps } from '../../types/charts';
+import { useChartTheme } from '../../hooks/useChartTheme';
+import { BaseChart } from './BaseChart';
 import { chartUtils } from '../../utils/chartUtils';
 
-export const LineChart: FC<LineChartProps> = ({
-  data = [],
-  width,
-  height,
-  className,
-  style,
-  config: {
-    xAxisKey,
-    yAxisKey,
-    title,
-    tooltipFormatter,
+/**
+ * 折れ線グラフコンポーネント
+ * 連続的なデータの推移を折れ線で表示します
+ */
+export const LineChart = memo(({ data, config, width, height, style, className }: LineChartProps) => {
+  const { colors, tooltip, formatTooltip } = useChartTheme();
+
+  // 設定から頻繁に使用される値を抽出
+  const { 
+    tooltipFormatter, 
+    xAxisKey, 
+    yAxisKey = 'y', 
+    xAxisLabel, 
+    yAxisLabel, 
+    showLegend, 
+    smooth, 
+    showDots = true, 
+    dotSize = 8,
     chartColors,
-    smooth = false,
-    showDots = true,
-    dotSize = 4,
-    showLegend = false,
-    xAxisLabel,
-    yAxisLabel,
-    error: propError,
+    title,
+    error: configError,
     isLoading
-  }
-}) => {
-  const theme = useTheme();
-  const {
-    colors: { primary, text, grid },
-    typography: { fontSize }
-  } = theme;
+  } = config;
   
-  const defaultColor = (chartColors && chartColors[0]) || primary;
+  const primaryColor = chartColors?.[0] ?? colors.primary;
 
-  const { validData, error: validationError } = useMemo(() => 
-    chartUtils.validateData(
-      data,
-      [xAxisKey, yAxisKey],
-      [yAxisKey]
-    ),
-  [data, xAxisKey, yAxisKey]);
+  // データの検証
+  const { isValid, error } = useMemo(() => 
+    chartUtils.validateXYData(data),
+    [data]
+  );
 
-  const hasData = validData.length > 0;
-  const error = propError || validationError;
+  // ツールチップフォーマッター
+  const handleTooltip = useCallback((value: number, name: string, props: any) => {
+    return formatTooltip(value, name, props, tooltipFormatter);
+  }, [tooltipFormatter, formatTooltip]);
 
-  const yDomain = useMemo(() => {
-    if (!hasData) return [0, 0];
-    const values = validData.map(item => Number(item[yAxisKey]));
-    return chartUtils.calculateDomain(values, { padding: 0.1 });
-  }, [validData, yAxisKey, hasData]);
-
-  const CustomTooltip = ({ active, payload }: TooltipProps) => {
-    if (!active || !payload || !payload.length) return null;
-
-    const data = payload[0].payload as { name: string; value: number };
-    const formattedValue = tooltipFormatter
-      ? tooltipFormatter(data.value, data.name, { value: data.value, name: data.name, dataKey: 'value', payload: data })
-      : chartUtils.formatValue(data.value);
+  // チャートコンテンツのメモ化
+  const chartContent = useMemo(() => {
+    if (!isValid) return null;
 
     return (
-      <div className="custom-tooltip">
-        <p>{`${data.name}: ${formattedValue}`}</p>
-      </div>
+      <ResponsiveContainer width={width ?? '100%'} height={height ?? 400}>
+        <RechartsLineChart
+          data={data}
+          margin={tooltip.margin}
+        >
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis
+            dataKey={xAxisKey}
+            label={xAxisLabel ? {
+              value: xAxisLabel,
+              position: 'bottom',
+              offset: -5
+            } : undefined}
+          />
+          <YAxis
+            label={yAxisLabel ? {
+              value: yAxisLabel,
+              angle: -90,
+              position: 'insideLeft'
+            } : undefined}
+          />
+          <Tooltip
+            formatter={handleTooltip}
+            contentStyle={tooltip.contentStyle}
+            labelStyle={tooltip.labelStyle}
+          />
+          {showLegend && (
+            <Legend
+              align="center"
+              verticalAlign="bottom"
+            />
+          )}
+          <Line
+            type={smooth ? 'monotone' : 'linear'}
+            dataKey={yAxisKey}
+            stroke={primaryColor}
+            dot={showDots}
+            activeDot={{ r: dotSize }}
+          />
+        </RechartsLineChart>
+      </ResponsiveContainer>
     );
-  };
+  }, [
+    isValid, 
+    data, 
+    width, 
+    height, 
+    tooltip.margin,
+    tooltip.contentStyle, 
+    tooltip.labelStyle, 
+    xAxisKey, 
+    xAxisLabel, 
+    yAxisKey, 
+    yAxisLabel, 
+    showLegend, 
+    smooth, 
+    showDots, 
+    dotSize, 
+    primaryColor, 
+    handleTooltip
+  ]);
 
   return (
-    <ChartContainer 
+    <BaseChart
       title={title}
+      error={error || configError}
+      isLoading={isLoading}
+      hasError={!isValid || !!configError}
       width={width}
       height={height}
-      className={className} 
       style={style}
-      hasError={!hasData}
-      error={error}
-      isLoading={isLoading}
+      className={className}
     >
-      {hasData && (
-        <ResponsiveContainer width="100%" height="100%">
-          <RechartsLineChart
-            data={validData}
-            margin={{ top: theme.spacing.chart, right: theme.spacing.chart, left: 0, bottom: 0 }}
-          >
-            <CartesianGrid 
-              strokeDasharray="3 3" 
-              stroke={grid} 
-            />
-            <XAxis
-              dataKey={xAxisKey}
-              stroke={text}
-              fontSize={fontSize.label}
-              label={xAxisLabel ? {
-                value: xAxisLabel,
-                position: 'bottom',
-                offset: 0,
-                fontSize: fontSize.label,
-                fill: text
-              } : undefined}
-              tick={{ fill: text }}
-            />
-            <YAxis
-              stroke={text}
-              fontSize={fontSize.label}
-              domain={yDomain}
-              label={yAxisLabel ? {
-                value: yAxisLabel,
-                angle: -90,
-                position: 'insideLeft',
-                fontSize: fontSize.label,
-                fill: text
-              } : undefined}
-              tick={{ fill: text }}
-            />
-            <Tooltip
-              content={<CustomTooltip />}
-              contentStyle={chartUtils.getTooltipStyle(theme)}
-            />
-            {showLegend && (
-              <Legend
-                wrapperStyle={chartUtils.getLegendStyle(theme)}
-              />
-            )}
-            <Line
-              type={smooth ? "monotone" : "linear"}
-              dataKey={yAxisKey}
-              stroke={defaultColor}
-              strokeWidth={2}
-              dot={showDots ? { r: dotSize, fill: defaultColor } : false}
-              activeDot={{ r: dotSize + 2, fill: defaultColor }}
-              isAnimationActive={!isLoading}
-            />
-          </RechartsLineChart>
-        </ResponsiveContainer>
-      )}
-    </ChartContainer>
+      {chartContent}
+    </BaseChart>
   );
-};
+});
+
+LineChart.displayName = 'LineChart';
