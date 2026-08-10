@@ -1,67 +1,97 @@
 {
   "name": "vizbrix",
-  "version": "1.0.0",
-  "description": "Flexible and lightweight dashboard component library for React",
+  "version": "0.1.0",
+  "description": "Free-placement dashboard layout engine for React. Pixel-precise placement that actually reflows.",
   "type": "module",
-  "main": "dist/index.js",
-  "module": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "license": "MIT",
+  "author": "MysMon",
+  "keywords": [
+    "dashboard",
+    "layout",
+    "free-placement",
+    "freeform",
+    "drag-and-drop",
+    "resize",
+    "react",
+    "typescript",
+    "headless",
+    "canvas"
+  ],
   "files": [
     "dist"
   ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js",
+      "require": "./dist/schema.cjs"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js",
+      "require": "./dist/react/index.cjs"
+    },
+    "./react/view": {
+      "types": "./dist/react/view.d.ts",
+      "import": "./dist/react/view.js",
+      "require": "./dist/react/view.cjs"
+    },
+    "./react/static": {
+      "types": "./dist/react/static.d.ts",
+      "import": "./dist/react/static.js",
+      "require": "./dist/react/static.cjs"
+    },
+    "./locales/ja": {
+      "types": "./dist/locales/ja.d.ts",
+      "import": "./dist/locales/ja.js",
+      "require": "./dist/locales/ja.cjs"
+    }
+  },
   "scripts": {
-    "build": "rollup -c",
-    "dev": "rollup -c -w",
+    "build": "tsup",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:ui": "vitest --ui",
-    "lint": "eslint . --max-warnings 0",
-    "lint:fix": "eslint . --fix"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "check": "pnpm typecheck && pnpm lint && pnpm test"
   },
-  "keywords": [
-    "react",
-    "dashboard",
-    "charts",
-    "visualization",
-    "typescript"
-  ],
-  "author": "MysMon",
-  "license": "MIT",
   "peerDependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "react-grid-layout": "^1.5.0",
-    "react-resizable": "^3.0.5",
-    "recharts": "^2.15.1"
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@emotion/react": "^11.14.0",
-    "@emotion/styled": "^11.14.0",
-    "@eslint/js": "^9.20.0",
-    "@rollup/plugin-typescript": "^12.1.2",
-    "@testing-library/jest-dom": "^6.4.2",
-    "@testing-library/react": "^14.2.1",
-    "@testing-library/user-event": "^14.5.2",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.2.0",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
-    "@types/react-grid-layout": "^1.3.5",
-    "@typescript-eslint/eslint-plugin": "^8.23.0",
-    "@typescript-eslint/parser": "^8.23.0",
-    "@vitest/coverage-v8": "^1.3.1",
-    "@vitest/ui": "^1.3.1",
+    "@vitest/coverage-v8": "^3.0.5",
     "eslint": "^9.20.0",
-    "eslint-plugin-react": "^7.37.4",
-    "eslint-plugin-react-hooks": "^5.1.0",
-    "jsdom": "^24.0.0",
-    "rollup": "^4.34.6",
-    "rollup-plugin-dts": "^6.1.1",
-    "tslib": "^2.8.1",
+    "jsdom": "^26.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsup": "^8.4.0",
     "typescript": "^5.7.3",
-    "vite": "^6.1.0",
-    "vitest": "^1.3.1"
-  },
-  "dependencies": {
+    "typescript-eslint": "^8.23.0",
+    "vitest": "^3.0.5"
   }
 }
