@@ -18,8 +18,17 @@
     "headless",
     "canvas"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MysMon/vizbrix.git"
+  },
+  "homepage": "https://github.com/MysMon/vizbrix#readme",
+  "bugs": {
+    "url": "https://github.com/MysMon/vizbrix/issues"
+  },
   "files": [
-    "dist"
+    "dist",
+    "README.ja.md"
   ],
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",

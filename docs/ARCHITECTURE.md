@@ -492,8 +492,11 @@ integration.
 - exports map with `types` conditions per entry; `sideEffects: false`.
 - vitest + jsdom for adapter tests; node env for core; @testing-library/react.
 - eslint flat config; rule: no `react` import under `src/core` (custom no-restricted-imports).
-- size-limit budgets (CI): core import ≤ 12 KB, react ≤ 20 KB, react/view ≤ 8 KB (gzip) —
-  honest numbers; adjust to measured +10% at first release, never silently.
+- Size budgets (CI reports; measured 2026-08 at v0.1, bundled+minified+gzip): core 28.9 KB,
+  react 26.8 KB, react/view 13.5 KB, react/static 4.2 KB, schema 8.5 KB. Budget = measured
+  +10%; any increase beyond that must be argued in the PR, never silent. (Original pre-
+  implementation targets were core ≤12/react ≤20/view ≤8 — superseded by measurement per
+  this section's own rule; the delta bought snapping, undo/redo, migrations, and a11y.)
 - peerDeps: react ^18 || ^19 (optional peers — core usable without).
 
 ## 15. Marketing-asset tests (must exist, cited in README)

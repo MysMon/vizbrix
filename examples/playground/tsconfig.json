@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "vizbrix/react/view": ["../../src/react/view.ts"],
+      "vizbrix/react/static": ["../../src/react/static.ts"],
+      "vizbrix/react": ["../../src/react/index.ts"],
+      "vizbrix/locales/ja": ["../../src/core/locales/ja.ts"],
+      "vizbrix/schema": ["../../src/schema.ts"],
+      "vizbrix": ["../../src/core/index.ts"]
+    },
+    "types": ["vite/client"]
+  },
+  "include": ["src", "vite.config.ts"]
+}
