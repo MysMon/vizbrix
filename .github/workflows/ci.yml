@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+      - name: Report entry sizes (gzip, bundled+minified)
+        run: |
+          for e in index react/index react/view react/static schema; do
+            s=$(npx esbuild dist/$e.js --bundle --minify --format=esm \
+              --external:react --external:react-dom --external:react/jsx-runtime \
+              | gzip -9 | wc -c)
+            printf "%-14s %6.1f KB gzip\n" "$e" "$(echo "$s/1024" | bc -l)"
+          done
