@@ -264,3 +264,53 @@ describe('property: key length growth stays bounded under sequential same-end in
     ).toBeLessThan(BOUND);
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* §1.8 / §5: never a prefix of the upper bound                        */
+/* ------------------------------------------------------------------ */
+
+describe('keyBetween — the result is never a prefix of the upper bound', () => {
+  /** Distinct results over many draws ⇒ the jitter actually survived. */
+  function distinctDraws(a: string | null, b: string | null, n = 40): Set<string> {
+    const out = new Set<string>();
+    for (let i = 0; i < n; i++) out.add(keyBetween(a, b));
+    return out;
+  }
+
+  it('keeps its jitter against a bound bisection would otherwise prefix', () => {
+    // 'a01' is the plain bisection of ('a0', 'a011') and is a prefix of it, so
+    // every jittered candidate would sort past the bound and be discarded.
+    const keys = distinctDraws('a0', 'a011');
+    expect(keys.size).toBeGreaterThan(1);
+    for (const k of keys) {
+      expect(isValidKey(k)).toBe(true);
+      expect('a0' < k && k < 'a011').toBe(true);
+      expect('a011'.startsWith(k)).toBe(false);
+    }
+  });
+
+  it('holds for a swept family of prefix-prone bounds', () => {
+    const rand = makeLcg(20240816);
+    let lower = keyBetween(null, null);
+    let upper = keyBetween(lower, null);
+    for (let i = 0; i < 400; i++) {
+      const mid = keyBetween(lower, upper);
+      expect(isValidKey(mid)).toBe(true);
+      expect(lower < mid && mid < upper).toBe(true);
+      expect(upper.startsWith(mid)).toBe(false);
+      // Walk into whichever half keeps producing tight, prefix-prone gaps.
+      if (rand() < 0.5) lower = mid;
+      else upper = mid;
+      if (lower >= upper) break;
+    }
+  });
+
+  it('keeps every batch key clear of its upper bound prefix', () => {
+    const keys = keysBetween('a0', 'a011', 5);
+    assertSorted(keys, 0);
+    for (const k of keys) {
+      expect('a011'.startsWith(k)).toBe(false);
+      expect('a0' < k && k < 'a011').toBe(true);
+    }
+  });
+});

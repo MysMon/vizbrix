@@ -88,6 +88,18 @@ export interface VizbrixProps<TData = undefined> {
   /** Mirror of what the live regions announce, e.g. for a toast system. */
   onAnnounce?: (message: string, tone: 'assertive' | 'polite') => void;
   children: ItemRenderer<TData>;
+  /**
+   * Escape hatch for a `children` callback that closes over changing state.
+   *
+   * Items do NOT re-render when `children` merely changes identity — an inline
+   * arrow is a new function on every parent render, and re-rendering every item
+   * because the parent re-rendered is the exact cost this library exists to
+   * avoid (§1.25). The callback itself is always current; what can go stale is
+   * an item that has no reason of its own to re-render. Change `renderKey`
+   * (`Object.is` comparison) and every item re-renders with the current
+   * callback.
+   */
+  renderKey?: unknown;
   /** Rendered instead of the dashboard when the document cannot be shown. */
   renderIncompatible?: (outcome: LoadOutcome) => ReactNode;
 }
@@ -189,6 +201,7 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
     getLabel = defaultLabel,
     onAnnounce,
     children,
+    renderKey,
     renderIncompatible,
   } = props;
 
@@ -204,17 +217,38 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
   /* ---------------- store ---------------- */
 
   const txSinkRef = useRef<((tx: Transaction) => void) | null>(null);
-  const [store] = useState<VizbrixStore<unknown>>(() => {
+  // Transactions committed before the sink is installed. React runs CHILD
+  // effects before parent effects, so a descendant that seeds the dashboard from
+  // its own mount effect — `useVizbrix().store.addItem(…)`, the natural way to
+  // do it — commits while `txSinkRef` is still null. Dropping those would mutate
+  // the store without ever telling the consumer, and nothing would be persisted.
+  const pendingTxRef = useRef<Transaction[]>([]);
+  const [{ store, seed }] = useState<{
+    store: VizbrixStore<unknown>;
+    seed: LayoutDoc<unknown> | null;
+  }>(() => {
     const initial = (layout ?? defaultLayout ?? EMPTY_DOC) as LayoutDoc<unknown>;
-    const seed = incompatibilityOf(initial) ? EMPTY_DOC : initial;
-    return instrumentStore(createStore(seed, { mode }), (tx) => txSinkRef.current?.(tx));
+    const usable = incompatibilityOf(initial) === null;
+    const doc = usable ? initial : EMPTY_DOC;
+    const instrumented = instrumentStore(createStore(doc, { mode }), (tx) => {
+      const sink = txSinkRef.current;
+      if (sink) sink(tx);
+      else pendingTxRef.current.push(tx);
+    });
+    // The document the store adopted, as the CALLER handed it over. The store
+    // repairs what it adopts, so `getDoc()` is not that object — and without
+    // this seed the very first reconciliation effect looks at a repaired
+    // document, decides the prop is a fresh assertion, and replays the raw prop
+    // over the repair (clearing history, re-arming the `keyBetween()` RangeError
+    // the repair exists to prevent).
+    return { store: instrumented, seed: usable ? initial : null };
   });
 
   /* ---------------- latest-value refs ---------------- */
 
   const onLayoutChangeRef = useRef(onLayoutChange);
   const onAnnounceRef = useRef(onAnnounce);
-  const lastEmittedRef = useRef<LayoutDoc<unknown> | null>(null);
+  const lastEmittedRef = useRef<LayoutDoc<unknown> | null>(seed);
   const syncingRef = useRef(false);
   const controlledRef = useRef(controlled);
   const [commitTick, setCommitTick] = useState(0);
@@ -226,7 +260,7 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
   });
 
   useEffect(() => {
-    txSinkRef.current = (tx: Transaction) => {
+    const sink = (tx: Transaction) => {
       // The reconciliation replaceDoc below is the parent's own document coming
       // back in; echoing it out again would be a loop with extra steps.
       if (syncingRef.current) return;
@@ -237,26 +271,57 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
       // come back unchanged, and "unchanged" is only observable by looking.
       if (controlledRef.current) setCommitTick((tick) => tick + 1);
     };
+    txSinkRef.current = sink;
+    // Anything a child effect committed on the way up now gets reported, in
+    // commit order. Drained before the sink can be torn down again, and cleared
+    // on cleanup so StrictMode's mount/cleanup/mount never replays one twice.
+    const queued = pendingTxRef.current;
+    if (queued.length > 0) {
+      pendingTxRef.current = [];
+      for (const tx of queued) sink(tx);
+    }
     return () => {
       txSinkRef.current = null;
+      pendingTxRef.current = [];
     };
   }, [store]);
 
   /* ---------------- render callback plumbing ---------------- */
 
+  // Updated SILENTLY, during render, on purpose (§1.25 and the note in
+  // `context.ts`): consumers pass an inline arrow, so bumping a version here —
+  // or putting the callback in the context value — would re-render every item
+  // on every parent render, and in controlled mode that is every commit. Items
+  // pick the current callback up the next time they render; `renderKey` is the
+  // escape hatch for a callback whose closure must be adopted immediately.
+  //
+  // Writing a ref during render is safe for exactly this shape of value: it is
+  // derived from props with no side effect, so a discarded (StrictMode or
+  // concurrent) render writes a value the committed render writes again below.
   const renderRef = useRef<AnyItemRenderer>(children as unknown as AnyItemRenderer);
-  const [renderVersion, setRenderVersion] = useState(0);
+  renderRef.current = children as unknown as AnyItemRenderer;
   useEffect(() => {
-    const next = children as unknown as AnyItemRenderer;
-    if (renderRef.current === next) return;
-    renderRef.current = next;
-    setRenderVersion((version) => version + 1);
+    renderRef.current = children as unknown as AnyItemRenderer;
   }, [children]);
 
   /* ---------------- refs into the DOM ---------------- */
 
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  // The nodes are mirrored into state as well as refs: an effect keyed only on
+  // `store`/`mode` never re-runs when the canvas is mounted LATE (recovering
+  // from `renderIncompatible`) or replaced (the `responsive:'scale'` wrapper
+  // appearing), which left the dashboard permanently uncontrolled and unmeasured.
+  const [canvasEl, setCanvasEl] = useState<HTMLDivElement | null>(null);
+  const [wrapperEl, setWrapperEl] = useState<HTMLDivElement | null>(null);
+  const setCanvas = useCallback((el: HTMLDivElement | null) => {
+    canvasRef.current = el;
+    setCanvasEl(el);
+  }, []);
+  const setWrapper = useCallback((el: HTMLDivElement | null) => {
+    wrapperRef.current = el;
+    setWrapperEl(el);
+  }, []);
   const controllerRef = useRef<InteractionController | null>(null);
   const announceRef = useRef<AnnounceTargets>({ assertive: null, polite: null });
 
@@ -291,7 +356,13 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
     store.setMode(mode);
   }, [store, mode]);
 
-  useContainerMeasure(store, scaled ? wrapperRef : canvasRef, canvasRef, size);
+  useContainerMeasure(
+    store,
+    scaled ? wrapperRef : canvasRef,
+    canvasRef,
+    size,
+    scaled ? wrapperEl : canvasEl,
+  );
 
   // Controlled reconciliation. Runs on every incoming prop AND after every
   // commit, which is what makes "the parent left the prop alone" observable.
@@ -309,7 +380,7 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
   // double mount leaves exactly one controller attached.
   useEffect(() => {
     if (mode !== 'edit') return;
-    const el = canvasRef.current;
+    const el = canvasEl;
     if (!el) return;
     const controller = createInteractionController(store, {
       snap,
@@ -325,11 +396,13 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
       detach();
       controller.destroy();
     };
-    // Deps are (store, mode) ON PURPOSE: option changes are pushed through
-    // `setOptions` in the next effect. Re-creating the controller because a
-    // `snap` object literal changed identity would drop an in-flight gesture.
-    // The initial options are read from the render that created it.
-  }, [store, mode]);
+    // Deps are (store, mode, canvasEl) ON PURPOSE: option changes are pushed
+    // through `setOptions` in the next effect. Re-creating the controller
+    // because a `snap` object literal changed identity would drop an in-flight
+    // gesture. The initial options are read from the render that created it.
+    // `canvasEl` only changes when the element itself is mounted or replaced —
+    // exactly when re-attachment is mandatory.
+  }, [store, mode, canvasEl]);
 
   useEffect(() => {
     controllerRef.current?.setOptions({ snap, longPress, strings, getLabel, onAnnounce: announce });
@@ -346,10 +419,10 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
       getLabel,
       controllerRef,
       renderRef,
-      renderVersion,
+      renderKey,
       announceRef,
     }),
-    [store, instanceId, mode, strings, getLabel, renderVersion],
+    [store, instanceId, mode, strings, getLabel, renderKey],
   );
 
   // NOTE: Cmd/Ctrl+Z (and ⇧Z for redo) is handled by the core keyboard sensor,
@@ -365,7 +438,7 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
   const editing = mode === 'edit';
   const canvas = (
     <div
-      ref={canvasRef}
+      ref={setCanvas}
       data-vzb={instanceId}
       data-vzb-mode={mode}
       className={scaled ? undefined : className}
@@ -384,7 +457,7 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
       {scaled ? (
         // `responsive:'scale'` wraps a fixed base-size canvas: the wrapper is
         // what gets measured, the canvas is what gets transformed (§4).
-        <div ref={wrapperRef} className={className} style={{ ...style, overflow: 'hidden' }}>
+        <div ref={setWrapper} className={className} style={{ ...style, overflow: 'hidden' }}>
           {canvas}
         </div>
       ) : (

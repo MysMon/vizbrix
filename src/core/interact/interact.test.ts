@@ -216,6 +216,39 @@ describe('pointer drag', () => {
     expect(h.store.canUndo()).toBe(false);
   });
 
+  it('commits the RELEASE position even when the last frame never ran', () => {
+    // Real rAF does not fire between the last pointermove and the pointerup, so
+    // the frame the drop commits has to be recomputed at the release point.
+    const queued: FrameRequestCallback[] = [];
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      queued.push(cb);
+      return queued.length;
+    }) as typeof globalThis.requestAnimationFrame;
+
+    const h = setup(twoItems());
+    down(h.nodes.get('a')!, 150, 150);
+    move(190, 150); // activation runs its own frame inline
+    move(250, 150); // this one only schedules — and the frame never runs
+    expect(queued.length).toBe(1);
+
+    up(250, 150);
+    expect(rectOf(h, 'a')).toEqual({ x: 200, y: 100, w: 200, h: 150 });
+  });
+
+  it('leaves a hidden item out of a multi-select drag', () => {
+    // A hidden item has no snapshot rect, so dragging it would commit a rect
+    // invented at the origin and destroy its stored position and size.
+    const h = setup(makeDoc([item('a', 'a0', A), item('b', 'b0', B, { hidden: true })]));
+    h.store.setSelection(['a', 'b']);
+
+    down(h.nodes.get('a')!, 150, 150);
+    move(190, 150);
+    up(190, 150);
+
+    expect(rectOf(h, 'a').x).toBe(140);
+    expect(rectOf(h, 'b')).toEqual(B);
+  });
+
   it('does not activate below the 3px threshold — the press is a click', () => {
     const h = setup(twoItems());
     const a = h.nodes.get('a')!;
@@ -318,6 +351,26 @@ describe('pointer drag', () => {
     expect(rectOf(h, 'b')).toEqual(B);
   });
 
+  it('Shift+drag is an axis lock, not an additive selection', () => {
+    // §9 binds Shift during a DRAG to the axis lock and §10 scopes "Shift
+    // additive" to the marquee; Shift+CLICK is what toggles the selection. So a
+    // Shift+drag on an unselected item takes the selection like any other drag —
+    // making it additive would silently drag the old selection along too.
+    const h = setup(twoItems());
+    h.store.setSelection(['b']);
+    down(h.nodes.get('a')!, 150, 150, { shiftKey: true });
+    move(200, 170, { shiftKey: true });
+    up(200, 170, { shiftKey: true });
+    expect(h.store.getSelection()).toEqual(['a']);
+    expect(rectOf(h, 'a')).toEqual({ x: 150, y: 100, w: 200, h: 150 });
+    expect(rectOf(h, 'b')).toEqual(B);
+
+    // Shift+click, which is not a drag, is still additive.
+    down(h.nodes.get('b')!, 550, 150, { shiftKey: true });
+    up(550, 150, { shiftKey: true });
+    expect(h.store.getSelection()).toEqual(['a', 'b']);
+  });
+
   it('a locked item selects but never moves', () => {
     const h = setup(makeDoc([item('a', 'a0', A, { locked: true })]));
     down(h.nodes.get('a')!, 150, 150);
@@ -399,6 +452,24 @@ describe('forbid collision policy', () => {
 
     up(500, 150);
     expect(rectOf(h, 'a')).toEqual({ x: 250, y: 100, w: 200, h: 150 });
+  });
+
+  it('refuses a tap-to-place landing on a forbidden overlap and stays armed', () => {
+    // §1.12 is a document guarantee, not a mouse-only one: every commit path
+    // goes through the same check.
+    const h = setup(makeDoc([item('a', 'a0', A, { collision: 'forbid' }), item('b', 'b0', B)]));
+    h.controller.beginPlace('a');
+
+    h.controller.completePlace({ x: 450, y: 100 }); // 450..650 overlaps b at 500..700
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.canUndo()).toBe(false);
+    // The placement is still armed, so the next tap is another attempt.
+    expect(h.store.getInteraction()).toEqual({ phase: 'placing', id: 'a' });
+    expect(h.announcements.at(-1)?.tone).toBe('assertive');
+
+    h.controller.completePlace({ x: 200, y: 300 });
+    expect(rectOf(h, 'a')).toEqual({ x: 200, y: 300, w: 200, h: 150 });
+    expect(h.store.getInteraction().phase).toBe('idle');
   });
 
   it('collisionWith scopes which items forbid an overlap', () => {
@@ -492,6 +563,39 @@ describe('resize', () => {
       h: 225,
     });
   });
+
+  it('keeps the Shift aspect ratio when a min/max limit bites', () => {
+    // maxW pulls BOTH axes back down the diagonal instead of flattening the
+    // rect to 300x300 (the ratio Shift promised outranks a single-axis clamp).
+    expect(resizeRect(A, 'se', 200, 200, { aspect: true, maxW: 300 })).toEqual({
+      x: 100,
+      y: 100,
+      w: 300,
+      h: 225,
+    });
+    // ...and minW pushes both up.
+    expect(resizeRect(A, 'se', -100, -100, { aspect: true, minW: 150 })).toEqual({
+      x: 100,
+      y: 100,
+      w: 150,
+      h: 112.5,
+    });
+    // Anchoring still works off the clamped size: the east edge stays put.
+    expect(resizeRect(A, 'nw', -200, -200, { aspect: true, maxW: 300 })).toEqual({
+      x: 0,
+      y: 25,
+      w: 300,
+      h: 225,
+    });
+    // A box that admits no rect at this ratio falls back to per-axis clamping —
+    // a hard limit is a promise about the document, Shift only about the gesture.
+    expect(resizeRect(A, 'se', 200, 200, { aspect: true, minW: 400, maxH: 150 })).toEqual({
+      x: 100,
+      y: 100,
+      w: 400,
+      h: 150,
+    });
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -512,6 +616,33 @@ describe('marquee', () => {
     up(350, 300);
     expect(h.store.getSelection()).toEqual(['a']);
     expect(h.store.getInteraction().phase).toBe('idle');
+  });
+
+  it('re-reads the container box when the page scrolls mid-gesture', () => {
+    // The marquee is the one frame path that converts an ABSOLUTE client point,
+    // so a scroll under the gesture would otherwise stretch the box wrong.
+    const h = setup(twoItems());
+    down(h.container, 50, 50);
+    move(350, 300);
+
+    h.container.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: -100,
+        left: 0,
+        top: -100,
+        right: 1000,
+        bottom: 500,
+        width: 1000,
+        height: 600,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    document.dispatchEvent(new Event('scroll'));
+
+    const state = h.store.getInteraction();
+    // The press anchor is a CONTENT coordinate and does not move with the page;
+    // the pointer now sits 100px further down the content.
+    expect(state.phase === 'marquee' && state.rect).toEqual({ x: 50, y: 50, w: 300, h: 350 });
   });
 
   it('Shift makes the marquee additive', () => {
@@ -548,6 +679,31 @@ describe('direction and scale', () => {
     expect(a.style.transform).toBe('translate(60px, 0px)');
     up(560, 150);
     expect(rectOf(h, 'a')).toEqual({ x: 40, y: 100, w: 200, h: 150 });
+  });
+
+  it('mirrors resize handles onto the logical edge under RTL', () => {
+    // Handle ids are PHYSICAL (the adapter pins `e` to `right: -5`) while rects
+    // are logical, so under RTL the physical-east handle drives the logical
+    // START edge. Whichever handle is grabbed, the edge under the cursor must
+    // track the cursor.
+    function dragHandle(id: 'e' | 'w' | 'ne' | 'sw', from: [number, number], to: [number, number]): Rect {
+      const h = setup(twoItems('rtl'));
+      const grip = document.createElement('span');
+      grip.setAttribute('data-vzb-handle', id);
+      h.nodes.get('a')!.appendChild(grip);
+      down(grip, from[0], from[1]);
+      move(to[0], to[1]);
+      up(to[0], to[1]);
+      const rect = rectOf(h, 'a');
+      h.detach();
+      return rect;
+    }
+
+    // a is logical x 100..300, i.e. physical 700..900 in a 1000px container.
+    expect(dragHandle('e', [900, 175], [950, 175])).toEqual({ x: 50, y: 100, w: 250, h: 150 });
+    expect(dragHandle('w', [700, 175], [650, 175])).toEqual({ x: 100, y: 100, w: 250, h: 150 });
+    expect(dragHandle('ne', [900, 100], [950, 80])).toEqual({ x: 50, y: 80, w: 250, h: 170 });
+    expect(dragHandle('sw', [700, 250], [650, 270])).toEqual({ x: 100, y: 100, w: 250, h: 170 });
   });
 
   it('divides pointer deltas by the canvas scale', () => {
@@ -651,6 +807,39 @@ describe('tap-to-place (SC 2.5.7)', () => {
     down(h.container, 300, 200);
     expect(rectOf(h, 'a')).toEqual({ x: 300, y: 200, w: 200, h: 150 });
     expect(h.store.getInteraction().phase).toBe('idle');
+  });
+
+  it('a keyboard grab disarms the placement, so no later press can teleport the item', () => {
+    const h = setup(twoItems());
+    h.controller.beginPlace('a');
+
+    const enter = () =>
+      h.nodes
+        .get('a')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+
+    enter(); // hands the armed placement over to a keyboard grab
+    expect(h.store.getInteraction().phase).toBe('kb-grab');
+    enter(); // drop
+    expect(h.store.getInteraction().phase).toBe('idle');
+
+    // The placement is gone: a press in the background is just a marquee click.
+    down(h.container, 700, 400);
+    up(700, 400);
+    expect(rectOf(h, 'a')).toEqual(A);
+  });
+
+  it('detach disarms an armed placement', () => {
+    const h = setup(twoItems());
+    h.controller.beginPlace('a');
+    h.detach();
+    expect(h.store.getInteraction().phase).toBe('idle');
+
+    // A later attach must not find a placement still armed from last time.
+    h.controller.attach(h.container);
+    down(h.container, 700, 400);
+    up(700, 400);
+    expect(rectOf(h, 'a')).toEqual(A);
   });
 
   it('cancelPlace commits nothing', () => {

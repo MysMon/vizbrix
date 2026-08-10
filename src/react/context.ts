@@ -4,16 +4,23 @@
  * Two things live here that are load-bearing for the render-count claim
  * (§1.25, §15.1):
  *
- * 1. **The render callback is ref-backed.** Consumers overwhelmingly pass an
- *    inline arrow as `children`, whose identity changes on every parent render.
- *    Putting that function straight into context would re-render every item on
- *    every parent render. Instead the callback lives in a stable box, and a
- *    separate `renderVersion` counter is bumped from an effect when the
- *    identity actually changes — so items pick up a new callback exactly once,
- *    on the commit after it changed, and never otherwise. (Documented tradeoff:
- *    the very first paint after a callback swap still uses the previous
- *    callback; there is no stale-forever class, only a stale-for-one-commit
- *    one.)
+ * 1. **The render callback is ref-backed, and a new identity does NOT re-render
+ *    items.** Consumers overwhelmingly pass an inline arrow as `children`, whose
+ *    identity changes on every parent render — and in controlled mode the parent
+ *    re-renders after every commit. Putting that function into context (or
+ *    bumping a version when its identity changes, which has the same effect
+ *    because it changes the context value) would re-render all N items on every
+ *    single commit, which is exactly the cost this library exists to avoid.
+ *
+ *    So the box is updated SILENTLY during render: items keep the callback they
+ *    last rendered with until they re-render for their own reason (their
+ *    snapshot changed), at which point they pick up the current one. The
+ *    documented tradeoff is a stale-render window — a closure captured by a
+ *    callback that changed while nothing about an item changed is not reflected
+ *    until that item next renders. The escape hatch is the `renderKey` prop:
+ *    change it and every item re-renders with the current callback. Pass a
+ *    stable `children` (`useCallback`, or a module-level function) whenever the
+ *    callback closes over changing state, and `renderKey` when it must not be.
  * 2. **Transient gesture state is NOT in context.** The interaction channel is
  *    read imperatively by the overlay and by the interaction layer's own DOM
  *    writes. If a component subscribed to it here, every item would re-render
@@ -28,6 +35,7 @@ import type {
   ReactNode,
 } from 'react';
 import type { InteractionController } from '../core/interact/controller';
+import { rebaseOk } from '../core/ops/ops';
 import type {
   InteractionState,
   LayoutDoc,
@@ -118,9 +126,18 @@ export interface VizbrixRuntime {
   getLabel: (item: LayoutItemBase) => string;
   /** Null in view mode and until the attach effect has run. */
   controllerRef: Box<InteractionController | null>;
+  /**
+   * The consumer's render callback. Written silently on every render of the
+   * surface — a new identity must NOT invalidate this context value, or every
+   * item re-renders whenever the parent does.
+   */
   renderRef: Box<AnyItemRenderer>;
-  /** Bumped when the render callback's identity changed. */
-  renderVersion: number;
+  /**
+   * The `renderKey` escape hatch, verbatim. It is part of the context value ON
+   * PURPOSE: changing it is the one documented way to force every item to
+   * re-render against the current callback.
+   */
+  renderKey: unknown;
   announceRef: Box<AnnounceTargets>;
 }
 
@@ -166,20 +183,28 @@ export const useIsomorphicLayoutEffect =
  *   user sees the moment they open the panel again.
  * - `forcedSize` (the `size` prop) pins the measured width to that named size's
  *   `maxWidth`, which is how Storybook/tests render a breakpoint on a desktop.
+ *
+ * `node` is the same element `measureRef` points at, mirrored into state by the
+ * caller. It is a DEPENDENCY, not a second source of truth: without it the
+ * effect never re-runs when the measured element is replaced (a canvas that
+ * mounted late after `renderIncompatible`, or the `responsive:'scale'` wrapper
+ * appearing), and the dashboard stays unmeasured forever. Callers with a
+ * permanently-mounted canvas may pass `undefined` and keep the old behaviour.
  */
 export function useContainerMeasure(
   store: VizbrixStore<unknown>,
   measureRef: Box<HTMLElement | null>,
   canvasRef: Box<HTMLElement | null>,
   forcedSize: string | undefined,
+  node?: HTMLElement | null,
 ): void {
   useEffect(() => {
     const el = measureRef.current;
     if (!el) return;
 
-    const measure = (): void => {
+    const measure = (entry?: ResizeObserverEntry): void => {
       const config = store.getDoc().container;
-      const observed = el.clientWidth;
+      const observed = contentWidthOf(el, entry);
 
       if (config?.responsive === 'scale') {
         const baseWidth = config.base?.width ?? 0;
@@ -200,29 +225,72 @@ export function useContainerMeasure(
       const forced = forcedSize ? config?.sizes?.[forcedSize]?.maxWidth : undefined;
       const width = typeof forced === 'number' ? forced : observed;
       if (!(width > 0)) return;
-      const height = config?.height === 'fill' ? el.clientHeight || undefined : undefined;
+      const height = config?.height === 'fill' ? contentHeightOf(el, entry) || undefined : undefined;
       store.setContainerSize(width, height);
     };
 
     measure();
     if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver((entries) => {
+      measure(entries[entries.length - 1]);
+    });
     observer.observe(el);
     return () => {
       observer.disconnect();
     };
-  }, [store, measureRef, canvasRef, forcedSize]);
+  }, [store, measureRef, canvasRef, forcedSize, node]);
+}
+
+/**
+ * The width the browser's `@container` queries will see.
+ *
+ * `clientWidth` is the WRONG number twice over: it is the padding box (so it
+ * over-reports by the container's own padding), and it is rounded to an
+ * integer. A `@container (max-width:767px)` block and this library's
+ * active-size computation must agree at 767.5px, and with `clientWidth` they do
+ * not — CSS keeps the wide rules while the resolved rects switch to the narrow
+ * ones. `container-type:inline-size` queries the CONTENT box, which is exactly
+ * `ResizeObserverEntry.contentRect`; outside an observer callback the border
+ * box from `getBoundingClientRect()` is the closest fractional stand-in.
+ *
+ * `clientWidth` remains the last-resort fallback for environments with no
+ * layout engine at all (jsdom returns a zero rect for everything).
+ */
+function contentWidthOf(el: HTMLElement, entry?: ResizeObserverEntry): number {
+  const observed = entry?.contentRect?.width ?? el.getBoundingClientRect?.().width;
+  return typeof observed === 'number' && observed > 0 ? observed : el.clientWidth;
+}
+
+function contentHeightOf(el: HTMLElement, entry?: ResizeObserverEntry): number {
+  const observed = entry?.contentRect?.height ?? el.getBoundingClientRect?.().height;
+  return typeof observed === 'number' && observed > 0 ? observed : el.clientHeight;
 }
 
 /**
  * Reconcile an incoming document prop into the store.
  *
- * Returns true when a replacement was applied. The identity checks are the
- * whole contract: a document that is already the store's current document, or
- * the exact object the store just emitted, is an ECHO and must not be
- * re-applied — re-applying it would clear history and fight the user mid-edit.
- * Anything else is the parent asserting a different document, including the
- * §1.15 rejection case where the parent left the prop untouched after a commit.
+ * Returns true when a replacement was applied. Detecting an ECHO — the parent
+ * handing back what the store already holds — is the whole contract, because a
+ * `replaceDoc` clears undo/redo (it is the load/import boundary). Two ways a
+ * document can be an echo, in increasing cost:
+ *
+ * 1. It IS the store's current document, or the document the caller last saw
+ *    the store adopt — which on mount is the document the store was CONSTRUCTED
+ *    with. That seed matters: the store repairs a document as it adopts it
+ *    (non-canonical `z` keys — store.ts `adoptDoc`), so a hand-authored prop is
+ *    never `=== getDoc()` afterwards, and replaying it would clear history and
+ *    re-key the whole document on the very first effect.
+ * 2. It is structurally equal to what the store holds. A parent is explicitly
+ *    allowed to store a transformed copy (§1.15, README: "a parent that
+ *    transforms the document is still free to store whatever it likes"), and
+ *    such a copy is a different object after every commit. Treating it as an
+ *    assertion issues a `replaceDoc`, and `replaceDoc` clears undo/redo — so
+ *    undo would be permanently dead for those consumers.
+ *
+ * Anything else is the parent asserting a different document — including the
+ * §1.15 rejection case, where the prop is the pre-commit document and is
+ * therefore structurally DIFFERENT from what the store now holds, so the
+ * rollback still fires.
  */
 export function syncIncomingDoc(
   store: VizbrixStore<unknown>,
@@ -232,16 +300,18 @@ export function syncIncomingDoc(
   if (incoming === undefined || incoming === null) return false;
   const currentDoc = store.getDoc();
   if (incoming === currentDoc || incoming === lastEmitted) return false;
-  store.apply(
-    [
-      {
-        type: 'replaceDoc',
-        before: currentDoc as unknown as LayoutDoc<never>,
-        after: incoming as unknown as LayoutDoc<never>,
-      },
-    ],
-    { source: 'api' },
-  );
+
+  const op = {
+    type: 'replaceDoc',
+    before: currentDoc as unknown as LayoutDoc<never>,
+    after: incoming as unknown as LayoutDoc<never>,
+  } as const;
+
+  // `rebaseOk`'s replaceDoc arm is exactly this question — "is the document
+  // already in the state this op would produce?" — with the schema's own
+  // `Len`-aware, depth-bounded, cycle-safe comparison.
+  if (rebaseOk(currentDoc as unknown as LayoutDoc<never>, op)) return false;
+  store.apply([op], { source: 'api' });
   return true;
 }
 

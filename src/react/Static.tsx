@@ -62,9 +62,16 @@ export function VizbrixStatic<TData = undefined>(
   const { layout, instanceId = 'vzb0', className, style, children } = props;
 
   // The same snapshot builder the store freezes at construction: rects resolved
-  // at `base.width`, sparse z ranks, z-sorted iteration order. Using it here is
-  // what guarantees this markup hydrates against `<Vizbrix>` without a mismatch
-  // (§1.21).
+  // at `base.width`, sparse z ranks, z-sorted iteration order — so the GEOMETRY
+  // and the stylesheet here are byte-identical to what the interactive surfaces
+  // render on the server (§1.21).
+  //
+  // That is not the same as being hydratable: this root writes
+  // `data-vzb-mode="static"` and the shells omit the editing attributes, so
+  // React reports an attribute mismatch (and does not patch it up) if this
+  // markup is handed to `hydrateRoot` with `<Vizbrix>`/`<VizbrixView>`. That is
+  // the documented contract — see docs/ssr.md: server-render the interactive
+  // component itself when you want to hydrate; both are SSR-safe.
   const views = buildServerViews(layout);
 
   const zRanks = new Map<string, number>();

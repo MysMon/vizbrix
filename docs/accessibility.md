@@ -35,6 +35,16 @@ Two deliberate choices worth knowing:
 
 Under `direction: 'rtl'`, arrow keys are screen directions: the left arrow moves the item left.
 
+**Typing inside a widget never edits the layout.** Keystrokes that originate in a form control,
+contenteditable region, link, or button inside an item are left to the browser — Backspace in a
+notes `<textarea>` deletes a character, not the widget. Add `data-vzb-keys` to an element to opt
+its subtree back into the layout shortcuts. The one exception is a live grab, which owns the
+keyboard until it ends so <kbd>Escape</kbd>/<kbd>Enter</kbd> always finish it.
+
+**Collision `forbid` applies to every path.** A nudge into a forbidden overlap is a no-op with a
+polite announcement; dropping a grab onto one keeps the item grabbed (announced assertively);
+placing onto one is rejected and the placing session stays armed for another attempt.
+
 Do **not** add your own Cmd/Ctrl+Z handler on the container — the core keyboard sensor owns it, and
 a second React handler would undo twice per keystroke (there is a test pinning that down).
 
@@ -58,14 +68,17 @@ Render it inside the item and you are done.
 The interaction is two independent taps with nothing in between — no dragging, holding or timing:
 
 1. Tap the move button. The item stays exactly where it is; the session is announced assertively
-   ("Placing Revenue. Choose a location and press Enter to place it, or press Escape to cancel.").
+   ("Placing Revenue. Click or tap a location to place it, press Enter or Space to move it with
+   the arrow keys instead, or press Escape to cancel.").
 2. Tap anywhere in the dashboard. The tapped point becomes the item's **top-left corner** (not its
    centre — every other coordinate in the system is a top-left origin, and a tap-to-place user is
    aiming at a spot, not carrying something under the cursor). The landing rect is clamped into the
    container, so a placement can never put an item out of reach.
 
-Tapping the move button again cancels. So does <kbd>Escape</kbd>, and so does the dashboard going
-read-only between the two taps.
+Tapping the move button again cancels. So does <kbd>Escape</kbd> — from anywhere inside the
+dashboard, including a focused widget — and so does the dashboard going read-only between the two
+taps. Pressing <kbd>Enter</kbd> or <kbd>Space</kbd> during a placing session hands the item over
+to a keyboard grab instead, for users who started with a tap but want arrow-key precision.
 
 The same session is available programmatically:
 

@@ -271,6 +271,171 @@ describe('grab sessions', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* content that owns its own keys                                      */
+/* ------------------------------------------------------------------ */
+
+describe('editable targets', () => {
+  function withChild(tag: string, attrs: Record<string, string> = {}): { h: Harness; child: HTMLElement } {
+    const h = setup();
+    const child = document.createElement(tag);
+    for (const [name, value] of Object.entries(attrs)) child.setAttribute(name, value);
+    h.nodes.get('a')!.appendChild(child);
+    return { h, child };
+  }
+
+  function press(node: HTMLElement, k: string, init: KeyInit = {}): KeyboardEvent {
+    const ev = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...init });
+    node.dispatchEvent(ev);
+    return ev;
+  }
+
+  it('leaves every layout shortcut alone inside a form control', () => {
+    const { h, child } = withChild('input');
+    for (const k of ['ArrowRight', 'ArrowDown', 'Enter', ' ', 'Delete', 'Backspace', ']']) {
+      const ev = press(child, k, { metaKey: k === ']' });
+      // The keystroke reaches the field: nothing was consumed on its behalf.
+      expect(ev.defaultPrevented).toBe(false);
+    }
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.getItem('a')).toBeDefined();
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(h.store.getOrder()).toEqual(['a', 'b']);
+    expect(h.announcements).toEqual([]);
+  });
+
+  it('leaves undo alone inside a form control', () => {
+    const { h, child } = withChild('input');
+    key(h, 'a', 'ArrowRight');
+    expect(rectOf(h, 'a').x).toBe(101);
+
+    const ev = press(child, 'z', { metaKey: true });
+    expect(ev.defaultPrevented).toBe(false);
+    expect(rectOf(h, 'a').x).toBe(101);
+  });
+
+  it('treats contenteditable content as editable', () => {
+    const { h, child } = withChild('div', { contenteditable: 'true' });
+    press(child, 'Backspace');
+    expect(h.store.getItem('a')).toBeDefined();
+  });
+
+  it('data-vzb-keys opts a control back into the layout shortcuts', () => {
+    const { h, child } = withChild('button', { 'data-vzb-keys': '' });
+    const ev = press(child, 'ArrowRight');
+    expect(ev.defaultPrevented).toBe(true);
+    expect(rectOf(h, 'a').x).toBe(101);
+  });
+
+  it('still lets a live grab own the keyboard from inside a field', () => {
+    const { h, child } = withChild('input');
+    key(h, 'a', 'Enter');
+    press(child, 'ArrowRight');
+    const state = h.store.getInteraction();
+    expect(state.phase === 'kb-grab' && state.rect.x).toBe(101);
+    press(child, 'Escape');
+    expect(h.store.getInteraction().phase).toBe('idle');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* placing vs. grabbing                                                */
+/* ------------------------------------------------------------------ */
+
+describe('tap-to-place and the keyboard', () => {
+  it('Escape cancels an armed placement from anywhere in the container', () => {
+    const h = setup();
+    h.controller.beginPlace('a');
+    h.container.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(h.announcements.at(-1)?.message).toContain('canceled');
+  });
+
+  it('Escape cancels an armed placement from a focused field', () => {
+    const h = setup();
+    const input = document.createElement('input');
+    h.nodes.get('a')!.appendChild(input);
+    h.controller.beginPlace('a');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(h.store.getInteraction().phase).toBe('idle');
+  });
+
+  it('Enter hands an armed placement over to a keyboard grab', () => {
+    const h = setup();
+    h.controller.beginPlace('a');
+    key(h, 'a', 'Enter');
+
+    // Exactly one live session, and the hand-over is not announced as a cancel.
+    expect(h.store.getInteraction()).toEqual({ phase: 'kb-grab', id: 'a', rect: A });
+    expect(h.announcements.map((a) => a.message).some((m) => m.includes('canceled'))).toBe(false);
+
+    key(h, 'a', 'ArrowRight');
+    key(h, 'a', 'Enter');
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(rectOf(h, 'a').x).toBe(101);
+  });
+
+  it('refuses to arm a placement while a grab is live', () => {
+    const h = setup();
+    key(h, 'a', 'Enter');
+    h.controller.beginPlace('a');
+    expect(h.store.getInteraction().phase).toBe('kb-grab');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* forbidden overlaps on the keyboard paths                            */
+/* ------------------------------------------------------------------ */
+
+describe('forbidden overlaps (§1.12)', () => {
+  // a's end edge touches b's start edge: one px right and they overlap.
+  const doc = (): LayoutDoc =>
+    makeDoc([
+      item('a', 'a0', A, { collision: 'forbid' }),
+      item('b', 'b0', { x: 300, y: 100, w: 200, h: 150 }),
+    ]);
+
+  it('refuses a nudge into a forbidden overlap, politely', () => {
+    const h = setup(doc());
+    key(h, 'a', 'ArrowRight');
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.canUndo()).toBe(false);
+    expect(h.announcements.at(-1)).toEqual({
+      message: 'Revenue chart move canceled. Back at 100, 100.',
+      tone: 'polite',
+    });
+
+    // The key is only dead in the direction that collides.
+    key(h, 'a', 'ArrowLeft');
+    expect(rectOf(h, 'a').x).toBe(99);
+  });
+
+  it('keeps the item grabbed when the drop would land on an overlap', () => {
+    const h = setup(doc());
+    key(h, 'a', 'Enter');
+    key(h, 'a', 'ArrowRight');
+    // The ghost tracks the keys 1:1, exactly like the pointer ghost.
+    const ghost = h.store.getInteraction();
+    expect(ghost.phase === 'kb-grab' && ghost.rect.x).toBe(101);
+
+    key(h, 'a', 'Enter');
+    expect(h.store.getInteraction().phase).toBe('kb-grab');
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.announcements.at(-1)).toEqual({
+      message: 'Revenue chart move canceled. Back at 101, 100.',
+      tone: 'assertive',
+    });
+
+    key(h, 'a', 'ArrowLeft');
+    key(h, 'a', 'ArrowLeft');
+    key(h, 'a', 'Enter');
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(rectOf(h, 'a').x).toBe(99);
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /* structural commands                                                 */
 /* ------------------------------------------------------------------ */
 

@@ -48,8 +48,12 @@ vizbrix/locales/ja     → Japanese strings (en is built into core defaults)
    `@container (max-width:)` MUST agree (engine-first had a minWidth/maxWidth contradiction — do
    not reproduce it).
 6. Vertical anchors under `height:'auto'` are UNRESOLVABLE (scrolling container has no definite
-   height): y modes `end|both|center|scale` are honored only under `container.height:'fill'`;
-   otherwise degrade to `start` with a dev-mode warning. Never emit `bottom:` against auto height.
+   height): y modes `end|both|center|scale` are honored only under `container.height:'fill'`.
+   Otherwise they are FROZEN at `base.height ?? 0` — y resolves against the base height for
+   every mode and CSS emits the resulting fixed `top/height` px (never `bottom:` or `%` against
+   auto height), so JS and CSS cannot drift. `validate()` raises the warning; `reencodeRect`
+   writes plain-px `start` for a degraded y; `setAnchor(id,'y',<non-start>)` refuses with an
+   `empty` result + dev-mode warning rather than silently rewriting the anchor.
 7. z-order: persisted fractional key (base-62, ASCII-ordinal, C-collation-compatible); CSS
    z-index derived as SPARSE integer ranks (gap 1024, midpoint split on insert, windowed
    rebalance) so insert-between re-renders exactly 1 item. Dense ranks are forbidden.
@@ -68,7 +72,11 @@ vizbrix/locales/ja     → Japanese strings (en is built into core defaults)
     (push = compaction = the O(n²) class we advertise not having). `forbid`: ghost tracks the
     pointer 1:1 all gesture; engine tracks `lastValidRect`; landing outline emitted as a guide;
     drop resolves to lastValidRect; if never valid → transaction discarded (no empty undo entry).
-    Evaluated at commit + during gesture for the outline; `resolve()` itself stays collision-free.
+    Enforced for EVERY commit path (pointer, keyboard nudge, keyboard-grab drop, tap-to-place)
+    at the single `commitRects` chokepoint, which may return `{status:'blocked'}`: a nudge into
+    a collision is a no-op with a polite announcement; a grab drop into one keeps the item
+    grabbed with an assertive announcement; a place onto one is rejected with placing still
+    armed. `resolve()` itself stays collision-free.
 13. Load: `load()` returns `LoadOutcome`, NEVER throws. Arms: `ok | migrated |
     forward-degraded | incompatible | invalid`. `compat` reader floor; `$unknown` parking at doc
     + item level, re-emitted verbatim on serialize.
@@ -78,8 +86,10 @@ vizbrix/locales/ja     → Japanese strings (en is built into core defaults)
     `before: undefined` DELETES the override (never writes null).
 15. Controlled mode: commit internally first (parent lag cannot stutter the drag); rejection
     detection = "prop did not change at all after commit", NOT "prop ≠ my ops" (parent may
-    legitimately transform). Transaction is the 2nd arg of `onLayoutChange`; NEVER stamp
-    metadata (`__txId` etc.) onto the doc.
+    legitimately transform). An incoming doc that is STRUCTURALLY equal to current state
+    (`rebaseOk` on a replaceDoc op) is treated as an echo — no replaceDoc, history retained —
+    so a parent that maps/normalizes the document does not wipe undo/redo. Transaction is the
+    2nd arg of `onLayoutChange`; NEVER stamp metadata (`__txId` etc.) onto the doc.
 16. `mode` default: `'view'`. View mode = no listeners attached at all (not no-op guards), no
     editing ARIA, history frozen, byte-identical geometry vs edit mode.
 17. Bundle claims via real entry points only (`size-limit` gates). No prop-gated dynamic import
@@ -106,11 +116,18 @@ vizbrix/locales/ja     → Japanese strings (en is built into core defaults)
     drag; 1 imperative overlay write per frame; 1 item render at commit."
 26. RTL: `container.direction?: 'ltr' | 'rtl'` in the schema now (default 'ltr'); v0.1 emits
     physical left/right from logical start/end per direction. No auto-mirroring of content.
+    Compass handle ids are PHYSICAL on the wire (adapter insets and cursors); the core mirrors
+    them to logical x edges internally under rtl (`logicalHandle`). Third-party adapters keep
+    rendering physical ids.
 27. Docs must warn: `container-type: inline-size` makes the container a containing block for
     `position: fixed` descendants → portal your dropdowns/modals (or Popover API).
 28. `data-*` hooks: root `data-vzb` (instance), items `data-vzb-item="<id>"`,
-    state attrs `data-selected`, `data-dragging`, `data-locked` for consumer styling.
-    Item ids are CSS-escaped in generated selectors (own tiny escape; CSS.escape is DOM-only).
+    state attrs `data-selected`, `data-dragging`, `data-resizing`, `data-locked` for consumer
+    styling; `data-vzb-keys` on a subtree opts an editable-looking element back INTO the layout
+    keyboard shortcuts (form controls/contenteditable/links/buttons are otherwise exempt —
+    §10). Item ids are CSS-escaped in generated selectors (own tiny escape; CSS.escape is
+    DOM-only), and the escaper additionally hex-escapes `<`, `>`, `&` in every position because
+    the stylesheet's sink is HTML `<style>` text.
 
 ## 2. Schema (exact — this becomes `src/core/schema/types.ts`)
 
@@ -256,9 +273,13 @@ Rounding: px terms → 2 decimals (`round`), pct → 4 decimals (`r4`). Property
   previous mode set. Golden-file tested.
 - Size overrides: `@container vzb-IID (max-width: <maxWidth>px) { … }` emitted in DESCENDING
   maxWidth order (later = smaller = wins; matches JS cascade §7).
-- Tier-3 stack block: `@container vzb-IID (max-width: <stackBelow − 1>px) { … }` — container
-  becomes flex column (gap 8px), items `position:static; width:auto; height:<resolved base h>px;
-  order:<stack order>`.
+- Tier-3 stack block: `@container vzb-IID (width < <stackBelow>px) { … }` (range syntax — the
+  strict inequality matches the JS `width < stackBelow` exactly, unlike a `max-width: n−1`
+  approximation) — container becomes flex column (gap 8px), items `position:static; width:auto;
+  height:<resolved base h>px; order:<stack order>`. Size-override bounds are emitted at EXACT
+  declared precision (no 2dp rounding on comparison bounds). Container `min-height` is the max
+  resolved bottom edge over EVERY cascade level (base + each declared size), re-emitted per
+  `@container` block where it differs; scale mode uses the base level only.
 - `responsive:'scale'`: no @container blocks; consumer wraps a fixed base-size canvas that the
   adapter scales via `transform: scale()` on a wrapper (NOT on items).
 - RTL: `direction:'rtl'` swaps left/right in emission.
@@ -370,12 +391,18 @@ cancel (Escape / pointercancel / doc detach). Activation: mouse/pen 3 px; touch 
   transient store update + imperative guide write. rAF-throttled.
 - Resize: 8 handles; anchor-edge math; min/max clamp live; sizeMatch snapping; center/aspect
   modifiers.
-- Marquee: from container background in edit mode; intersect = select; Shift additive.
+- Marquee: from container background in edit mode; intersect = select; Shift additive. The
+  marquee (alone among gestures — it converts an absolute client point) re-measures the
+  container on scroll; drag/resize stay one-measurement-per-gesture.
 - Click selection: click = select (Shift toggles); click background = clear.
 - Keyboard sensor (edit mode, item focused): Arrow 1 px; Shift+Arrow 10 px; Cmd/Ctrl+Arrow =
   jump to next snap candidate in that direction; Enter/Space = grab ↔ drop (grab session = one
   transaction); Escape = cancel-revert; Delete/Backspace = remove; `[`/`]` +Cmd/Ctrl = z-order.
-  Tab order follows z-sorted DOM order.
+  Tab order follows z-sorted DOM order. Keystrokes originating in form controls,
+  contenteditable, links, or buttons inside an item are NOT layout commands (the browser keeps
+  them) unless the element carries `data-vzb-keys`; a live grab is the one exception and owns
+  the keyboard until it ends. Arming a keyboard grab cancels tap-to-place and vice versa —
+  the two can never be live together.
 - Tap-to-place (SC 2.5.7): `beginPlace(id) → completePlace(pointOrCell) | cancelPlace()`.
   Adapter exposes a focusable per-item move affordance (`ui.moveButtonProps`) + container click
   target while placing; placing state announced assertively.
@@ -414,8 +441,13 @@ export function useSelection(): { ids: string[]; set(ids): void; clear(): void }
 ```
 
 - Item component: memoized; subscribes via `useSyncExternalStore(subscribeItem(id), getSnap,
-  getServerItemView)`. Render callback stored in ref-backed context + `renderVersion` bump when
-  callback identity changes (documented; no stale-forever class).
+  getServerItemView)`. Render callback stored in ref-backed context and updated SILENTLY on
+  identity change (a new inline arrow per parent render must NOT re-render N items — that was
+  the original `renderVersion` design's own failure mode). Widgets that close over parent state
+  re-render via their item channel on commits; a `renderKey?: unknown` prop on
+  Vizbrix/VizbrixView forces all items to re-render when it changes (the documented escape
+  hatch for parent-state-dependent widget content). Container measurement uses the fractional
+  content box (ResizeObserver `contentRect`), matching `container-type: inline-size`.
 - Structural + positional CSS in a `<style>` element rendered in-tree (dedupe by instanceId),
   content via `dangerouslySetInnerHTML` (child-combinator `>` must not be escaped).
 - Overlay: single `<svg>` (guides) + selection outlines + marquee rect; subscribed to the

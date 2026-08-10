@@ -141,7 +141,11 @@ function normalizeContainer(value: unknown, out: Issue[]): ContainerConfig {
   if (isFiniteNumber(src.stackBelow) && src.stackBelow >= 0) container.stackBelow = src.stackBelow;
 
   if (isPlainObject(src.sizes)) {
-    const sizes: Record<string, SizeDef> = {};
+    // Prototype-free accumulator: a size literally named `__proto__` (JSON
+    // permits it) would otherwise hit `Object.prototype`'s setter, silently
+    // vanish, and break the L3 fixpoint. The spread at the end turns the own
+    // key back into a normal own data property on an ordinary object.
+    const sizes = Object.create(null) as Record<string, SizeDef>;
     let count = 0;
     for (const name of Object.keys(src.sizes)) {
       const def: unknown = src.sizes[name];
@@ -150,7 +154,7 @@ function normalizeContainer(value: unknown, out: Issue[]): ContainerConfig {
         count++;
       }
     }
-    if (count > 0) container.sizes = sizes;
+    if (count > 0) container.sizes = { ...sizes };
   }
 
   // Unknown container keys are NOT parked: ContainerConfig has no $unknown
@@ -376,7 +380,8 @@ function normalizeAt(
     out.push(issueWarn(path, 'not an object; dropped'));
     return undefined;
   }
-  const at: Record<string, ItemOverride> = {};
+  // Prototype-free accumulator — see `normalizeContainer`'s `sizes` for why.
+  const at = Object.create(null) as Record<string, ItemOverride>;
   let count = 0;
   for (const name of Object.keys(value)) {
     const p = `${path}.${name}`;
@@ -386,8 +391,19 @@ function normalizeAt(
       continue;
     }
     const override: Record<string, unknown> = {};
-    if (raw.x !== undefined) override.x = normalizePlacement(raw.x, `${p}.x`, out);
-    if (raw.y !== undefined) override.y = normalizePlacement(raw.y, `${p}.y`, out);
+    for (const axis of ['x', 'y'] as const) {
+      if (raw[axis] === undefined) continue;
+      const placement = normalizeOverridePlacement(raw[axis], `${p}.${axis}`, out);
+      if (placement) override[axis] = placement;
+      else {
+        out.push(
+          issueWarn(
+            `${p}.${axis}`,
+            'invalid axis placement in a size override; dropped (the base placement is kept)',
+          ),
+        );
+      }
+    }
     if (typeof raw.hidden === 'boolean') override.hidden = raw.hidden;
     else if (raw.hidden !== undefined) out.push(issueWarn(`${p}.hidden`, 'not a boolean; dropped'));
     if (isFiniteNumber(raw.order)) override.order = raw.order;
@@ -406,7 +422,38 @@ function normalizeAt(
     at[name] = override as ItemOverride;
     count++;
   }
-  return count > 0 ? at : undefined;
+  return count > 0 ? { ...at } : undefined;
+}
+
+/**
+ * Normalize a placement that lives inside a size override, where damage is
+ * DROPPED instead of repaired.
+ *
+ * `normalizePlacement` substitutes `{mode:'start', offset:0, size:0}` for
+ * anything it cannot read, which is the right answer for `item.x` / `item.y`
+ * (they are required) and the wrong one for `at.<size>.x`: overrides replace
+ * placements wholesale (cascade.ts), so the substitute would overwrite a
+ * perfectly good base placement with a zero-sized box and make the item vanish
+ * at every width where that size is active. Dropping the override instead
+ * leaves the base layout intact — exactly what not writing the override would
+ * have produced. A dropped field stays dropped on a second pass, so the L3
+ * fixpoint is preserved.
+ */
+function normalizeOverridePlacement(
+  value: unknown,
+  path: string,
+  out: Issue[],
+): AxisPlacement | undefined {
+  if (!isPlainObject(value) || typeof value.mode !== 'string' || !MODE_SET.has(value.mode)) {
+    return undefined;
+  }
+  // A missing or non-length term would silently normalize to 0 — a zero-sized
+  // box again, so treat it as damage rather than repairing it.
+  for (const field of placementFields(value.mode as AxisMode)) {
+    const term: unknown = value[field];
+    if (!isFiniteNumber(term) && !isPlainObject(term)) return undefined;
+  }
+  return normalizePlacement(value, path, out);
 }
 
 function normalizeStringArray(
@@ -573,7 +620,13 @@ function parkUnknown(
     return Object.keys(existing).length > 0 ? { ...existing } : undefined;
   }
 
-  const parked: Record<string, unknown> = {};
+  // Prototype-free accumulator: `parked['__proto__'] = …` on a plain object
+  // literal would invoke `Object.prototype`'s `__proto__` setter instead of
+  // creating an own property, so the value would never land in `$unknown` —
+  // contradicting law L2's "parked verbatim and re-emitted" promise. The spread
+  // below copies the own key onto an ordinary object via CreateDataProperty,
+  // so nothing's prototype is ever mutated.
+  const parked = Object.create(null) as Record<string, unknown>;
   for (const key of extras) {
     parked[key] = src[key];
     out.push(

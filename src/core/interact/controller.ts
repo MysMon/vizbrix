@@ -59,7 +59,7 @@ import { yExtentOf } from '../geometry/resolve';
 import { layoutWidthOf } from '../store/server-view';
 import { createSnapEngine } from '../snap/engine';
 import type { AnnounceKind, InteractRuntime, Modifiers, ResolvedOptions } from './machine';
-import { createMachine } from './machine';
+import { collisionValid, createMachine } from './machine';
 import { createPointerSensor } from './pointer';
 import { createKeyboardSensor } from './keyboard';
 import { createPlaceController } from './place';
@@ -291,6 +291,35 @@ export function createInteractionController<TData = undefined>(
     return { type: 'placeAt', id: item.id, size, before, after };
   }
 
+  /**
+   * §1.12 at the ONE chokepoint every sensor commits through.
+   *
+   * The pointer sensor validates per frame so the ghost can show the refusal
+   * live, but the keyboard nudge, the grab drop and tap-to-place all land a rect
+   * straight from arithmetic — and neither `commitRects` nor the store used to
+   * look at `collision`, so `forbid` was a mouse-only guarantee. Checking here
+   * makes it a document guarantee and leaves `resolve()` collision-free.
+   *
+   * Nothing is paid when no item declares `forbid`, which is the common case.
+   */
+  function forbidden(proposed: ReadonlyMap<string, Rect>): boolean {
+    const items = new Map<string, LayoutItemBase>();
+    let anyForbid = false;
+    for (const item of store.getDoc()?.items ?? []) {
+      items.set(item.id, item);
+      if (item.collision === 'forbid') anyForbid = true;
+    }
+    if (!anyForbid) return false;
+
+    const staticRects = new Map<string, Rect>();
+    for (const id of store.getOrder()) {
+      if (proposed.has(id)) continue;
+      const view = store.getItemView(id);
+      if (view && view.item.hidden !== true) staticRects.set(id, view.rect);
+    }
+    return !collisionValid(proposed, items, staticRects);
+  }
+
   function commitRects(
     rects: ReadonlyMap<string, Rect>,
     kind: 'move' | 'resize',
@@ -303,6 +332,10 @@ export function createInteractionController<TData = undefined>(
       entries.push([item, rect]);
     }
     if (entries.length === 0) return { status: 'empty', skipped: [] };
+
+    const proposed = new Map<string, Rect>();
+    for (const [item, rect] of entries) proposed.set(item.id, rect);
+    if (forbidden(proposed)) return { status: 'blocked', skipped: [] };
 
     const applyOpts: ApplyOptions = { source };
     if (entries.length === 1) {
@@ -329,6 +362,7 @@ export function createInteractionController<TData = undefined>(
     id: string,
     rect?: Rect,
     direction?: 'front' | 'back',
+    tone?: 'assertive' | 'polite',
   ): void {
     const onAnnounce = options.onAnnounce;
     if (!onAnnounce) return;
@@ -351,7 +385,7 @@ export function createInteractionController<TData = undefined>(
       kind === 'reordered'
         ? s.reordered({ ...ctx, direction: direction ?? 'front' })
         : s[kind](ctx);
-    onAnnounce(message, ASSERTIVE.has(kind) ? 'assertive' : 'polite');
+    onAnnounce(message, tone ?? (ASSERTIVE.has(kind) ? 'assertive' : 'polite'));
   }
 
   /* ---------------- clock ---------------- */
@@ -418,7 +452,9 @@ export function createInteractionController<TData = undefined>(
   /* ---------------- sensors ---------------- */
 
   const place = createPlaceController(runtime);
-  const keyboard = createKeyboardSensor(runtime);
+  const keyboard = createKeyboardSensor(runtime, {
+    cancelPlace: (silent) => place.cancel(silent),
+  });
   const pointer = createPointerSensor(runtime, {
     completePlace: (point) => place.complete(point),
     cancelGrab: () => keyboard.cancelGrab(),
@@ -435,6 +471,10 @@ export function createInteractionController<TData = undefined>(
         if (!detachers.delete(detach)) return;
         detachPointer();
         detachKeyboard();
+        // The sensors that could end a placement are gone: leaving it armed
+        // strands the transient channel on `placing` and would let a later
+        // re-attach land the item on the first press it sees.
+        place.cancel();
         if (container === el) container = null;
       };
       detachers.add(detach);

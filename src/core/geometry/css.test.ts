@@ -24,8 +24,11 @@ import type {
   LayoutItemBase,
   Len,
 } from '../schema/types';
+import { isStackedAt } from '../store/server-view';
+import { activeSizesAt } from './cascade';
 import { cssEscapeIdent, emitStylesheet } from './css';
-import { resolveItem } from './resolve';
+import { reencodeRect } from './reencode';
+import { resolveAxis, resolveItem } from './resolve';
 
 /* ------------------------------------------------------------------ */
 /* Test-only CSS value evaluator                                       */
@@ -140,7 +143,10 @@ interface ParsedRule {
   decls: Record<string, string>;
 }
 interface ParsedBlock {
+  /** The numeric bound of the query, in px. */
   maxWidth: number;
+  /** `true` for the range form `(width < Xpx)`, `false` for `(max-width: Xpx)`. */
+  exclusive: boolean;
   rules: ParsedRule[];
 }
 interface ParsedSheet {
@@ -155,9 +161,14 @@ function parseSheet(css: string): ParsedSheet {
     const line = raw.trim();
     if (line === '') continue;
     if (line.startsWith('@container')) {
-      const m = /max-width:\s*([-\d.]+)px/.exec(line);
-      expect(m, `unparseable container query: ${line}`).toBeTruthy();
-      current = { maxWidth: Number.parseFloat(m![1]), rules: [] };
+      const range = /\(width\s*<\s*([-\d.]+)px\)/.exec(line);
+      const max = /max-width:\s*([-\d.]+)px/.exec(line);
+      expect(range ?? max, `unparseable container query: ${line}`).toBeTruthy();
+      current = {
+        maxWidth: Number.parseFloat((range ?? max)![1]),
+        exclusive: range !== null,
+        rules: [],
+      };
       sheet.blocks.push(current);
       continue;
     }
@@ -186,7 +197,9 @@ function computed(sheet: ParsedSheet, selector: string, width: number): Record<s
     for (const r of rules) if (r.selector === selector) Object.assign(out, r.decls);
   };
   apply(sheet.rules);
-  for (const block of sheet.blocks) if (width <= block.maxWidth) apply(block.rules);
+  for (const block of sheet.blocks) {
+    if (block.exclusive ? width < block.maxWidth : width <= block.maxWidth) apply(block.rules);
+  }
   return out;
 }
 
@@ -270,6 +283,97 @@ describe('cssEscapeIdent', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* HTML-context safety (the <style> sink)                              */
+/* ------------------------------------------------------------------ */
+
+describe('emitStylesheet — <style> text safety', () => {
+  // The sheet is injected with dangerouslySetInnerHTML into a raw-text
+  // <style> element: a single literal `</style>` anywhere in it ends the
+  // element and turns document data into markup.
+  const PAYLOADS = [
+    '</style><script>alert(1)</script>',
+    'x" ]</style>',
+    '</STYLE ><img src=x onerror=alert(1)>',
+    'a<b&c>d',
+    '</style',
+  ];
+
+  /**
+   * The sheet with the tier-3 range operator (`… (width < 480px){`) removed —
+   * the ONLY `<` the emitter is allowed to write. Anything left is a `<` that
+   * came from document data, which is exactly the injection vector.
+   */
+  const withoutRangeOps = (css: string) => css.replace(/ \(width < [\d.]+px\)\{$/gm, '');
+
+  it('never emits a raw "<" for a hostile item id', () => {
+    for (const payload of PAYLOADS) {
+      const css = emitStylesheet(
+        doc({ base: { width: 1000 } }, [item({ id: payload })]),
+        'i',
+        ranks(payload),
+      );
+      expect(withoutRangeOps(css), payload).not.toContain('<');
+      expect(css.toLowerCase(), payload).not.toContain('</style');
+      expect(css, payload).not.toContain('</');
+    }
+  });
+
+  it('never emits a raw "<" for a hostile instance id (selector AND container-name)', () => {
+    for (const payload of PAYLOADS) {
+      const css = emitStylesheet(
+        doc({ base: { width: 1000 }, sizes: { sm: { maxWidth: 600 } } }, [
+          item({ id: 'a', at: { sm: { x: { mode: 'start', offset: 1, size: 1 } } } }),
+        ]),
+        payload,
+        ranks('a'),
+      );
+      expect(withoutRangeOps(css), payload).not.toContain('<');
+      expect(css.toLowerCase(), payload).not.toContain('</style');
+      expect(css, payload).not.toContain('</');
+      // the @container prelude uses the same escaped name as container-name
+      expect(css).toContain('@container ');
+    }
+  });
+
+  it('never emits a raw "<" for hostile size names', () => {
+    const name = '</style><script>alert(1)</script>';
+    const css = emitStylesheet(
+      doc({ base: { width: 1000 }, sizes: { [name]: { maxWidth: 600 } } }, [
+        item({ id: 'a', at: { [name]: { x: { mode: 'start', offset: 1, size: 1 } } } }),
+      ]),
+      'i',
+      ranks('a'),
+    );
+    expect(withoutRangeOps(css)).not.toContain('<');
+    expect(css.toLowerCase()).not.toContain('</style');
+    expect(css).not.toContain('</');
+  });
+
+  it('hex-escapes the HTML-significant characters, leaving other escaping alone', () => {
+    expect(cssEscapeIdent('a<b')).toBe('a\\3c b');
+    expect(cssEscapeIdent('a>b')).toBe('a\\3e b');
+    expect(cssEscapeIdent('a&b')).toBe('a\\26 b');
+    expect(cssEscapeIdent('a"b')).toBe('a\\"b');
+    const css = emitStylesheet(
+      doc({ base: { width: 100 } }, [item({ id: '</style>' })]),
+      'i',
+      ranks('</style>'),
+    );
+    expect(css).toContain('[data-vzb-item="\\3c /style\\3e "]');
+  });
+
+  it('keeps the tier-3 range query (a lone "<" is inert in raw text)', () => {
+    const css = emitStylesheet(
+      doc({ base: { width: 1000, height: 400 }, height: 'fill' }, [item({ id: 'a' })]),
+      'i',
+      ranks('a'),
+    );
+    expect(css).toContain('(width < 480px)');
+    expect(css).not.toContain('</');
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /* Structure                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -281,7 +385,7 @@ describe('emitStylesheet — container rule', () => {
       ranks('a'),
     );
     expect(css.split('\n')[0]).toBe(
-      '[data-vzb="inst"]{position:relative;container-type:inline-size;container-name:vzb-inst;min-height:100px}',
+      '[data-vzb="inst"]{position:relative;isolation:isolate;container-type:inline-size;container-name:vzb-inst;min-height:100px}',
     );
   });
 
@@ -615,7 +719,9 @@ describe('emitStylesheet — tier-3 stack', () => {
     const css = emitStylesheet(doc(config, [mk('c', 200), mk('a', 100), mk('b', 0)]), 'i', ranks());
     const sheet = parseSheet(css);
     const stack = sheet.blocks[sheet.blocks.length - 1];
-    expect(stack.maxWidth).toBe(479);
+    // strict `W < stackBelow`, matching isStackedAt — not `max-width: 479px`
+    expect(stack).toMatchObject({ maxWidth: 480, exclusive: true });
+    expect(css).toContain('@container vzb-i (width < 480px){');
     expect(stack.rules[0].decls).toMatchObject({
       display: 'flex',
       'flex-direction': 'column',
@@ -642,9 +748,17 @@ describe('emitStylesheet — tier-3 stack', () => {
 
   it('respects stackBelow and disables at 0', () => {
     const at320 = parseSheet(emitStylesheet(doc({ ...config, stackBelow: 320 }, [mk('a', 0)]), 'i', ranks()));
-    expect(at320.blocks[0].maxWidth).toBe(319);
+    expect(at320.blocks[0]).toMatchObject({ maxWidth: 320, exclusive: true });
     const off = parseSheet(emitStylesheet(doc({ ...config, stackBelow: 0 }, [mk('a', 0)]), 'i', ranks()));
     expect(off.blocks).toHaveLength(0);
+  });
+
+  it('does not degenerate to (max-width:0px) for a tiny stackBelow', () => {
+    for (const stackBelow of [1, 0.5]) {
+      const css = emitStylesheet(doc({ ...config, stackBelow }, [mk('a', 0)]), 'i', ranks());
+      expect(css).toContain(`(width < ${stackBelow}px)`);
+      expect(css).not.toContain('(max-width:0px)');
+    }
   });
 
   it('re-emits the stacked form for sizes declared below stackBelow', () => {
@@ -661,7 +775,8 @@ describe('emitStylesheet — tier-3 stack', () => {
     );
     const blocks = parseSheet(css).blocks;
     const stackLevels = blocks.filter((b) => b.rules.some((r) => r.decls.position === 'static'));
-    expect(stackLevels.map((b) => b.maxWidth)).toEqual([479, 400]);
+    expect(stackLevels.map((b) => b.maxWidth)).toEqual([480, 400]);
+    expect(stackLevels.map((b) => b.exclusive)).toEqual([true, false]);
     expect(stackLevels[1].rules).toHaveLength(2);
     const xs = Object.fromEntries(
       stackLevels[1].rules.map((r) => [/item="(.*)"/.exec(r.selector)![1], r.decls]),
@@ -697,6 +812,128 @@ describe('emitStylesheet — tier-3 stack', () => {
   });
 });
 
+describe('emitStylesheet — tier-3 boundary', () => {
+  const cfg = (stackBelow: number): ContainerConfig => ({
+    base: { width: 1000, height: 800 },
+    height: 'fill',
+    stackBelow,
+  });
+
+  it('stacks at exactly the widths isStackedAt reports, fractional ones included', () => {
+    for (const stackBelow of [480, 320.5, 1]) {
+      const config = cfg(stackBelow);
+      const sheet = parseSheet(
+        emitStylesheet(
+          doc(config, [item({ id: 'a' }), item({ id: 'b', y: { mode: 'start', offset: 200, size: 60 } })]),
+          'i',
+          ranks(),
+        ),
+      );
+      const widths = [
+        stackBelow + 1,
+        stackBelow,
+        stackBelow - 0.01,
+        stackBelow - 0.5,
+        stackBelow - 0.8,
+        Math.max(0, stackBelow - 1),
+        stackBelow / 2,
+      ];
+      for (const width of widths) {
+        const decls = computed(sheet, '[data-vzb="i"] [data-vzb-item="a"]', width);
+        expect(decls.position === 'static', `stackBelow ${stackBelow} @ ${width}px`).toBe(
+          isStackedAt(config, width),
+        );
+      }
+    }
+  });
+});
+
+describe('emitStylesheet — breakpoint precision', () => {
+  it('emits fractional maxWidth exactly, so the JS fold and the CSS cascade agree', () => {
+    const config: ContainerConfig = {
+      base: { width: 1200, height: 800 },
+      height: 'fill',
+      stackBelow: 0,
+      sizes: { sm: { maxWidth: 600.005 } },
+    };
+    const it0 = item({
+      id: 'a',
+      x: { mode: 'start', offset: 0, size: 100 },
+      at: { sm: { x: { mode: 'start', offset: 0, size: 400 } } },
+    });
+    const css = emitStylesheet(doc(config, [it0]), 'i', ranks('a'));
+    expect(css).toContain('(max-width:600.005px)');
+    const sheet = parseSheet(css);
+    for (const width of [600, 600.004, 600.005, 600.006, 600.01, 601]) {
+      const decls = computed(sheet, '[data-vzb="i"] [data-vzb-item="a"]', width);
+      const active = activeSizesAt(config, width);
+      expect(active.length > 0, `activeSizesAt @${width}`).toBe(width <= 600.005);
+      expect(evaluate(decls.width, width), `width @${width}`).toBe(
+        resolveItem(it0, config, width, 800).w,
+      );
+    }
+  });
+});
+
+describe('emitStylesheet — container min-height across cascade levels', () => {
+  const config: ContainerConfig = {
+    base: { width: 1000, height: 600 },
+    stackBelow: 0,
+    sizes: { sm: { maxWidth: 600 }, lg: { maxWidth: 1200 } },
+  };
+  const minHeight = (css: string) => parseSheet(css).rules[0].decls['min-height'];
+
+  it('reserves the tallest bottom edge reached at ANY size, not just at base width', () => {
+    const css = emitStylesheet(
+      doc(config, [
+        item({
+          id: 'a',
+          y: { mode: 'start', offset: 0, size: 100 },
+          at: { sm: { y: { mode: 'start', offset: 300, size: 150 } } },
+        }),
+      ]),
+      'i',
+      ranks('a'),
+    );
+    // The container is not its own query container, so the reserved height has
+    // to cover the sm layout too — it can never be re-stated inside the block.
+    expect(minHeight(css)).toBe('450px');
+  });
+
+  it('honors each level’s own hidden state', () => {
+    const css = emitStylesheet(
+      doc(config, [
+        item({
+          id: 'a',
+          hidden: true,
+          y: { mode: 'start', offset: 500, size: 100 },
+          at: { sm: { hidden: false } },
+        }),
+        item({ id: 'b', y: { mode: 'start', offset: 0, size: 50 } }),
+      ]),
+      'i',
+      ranks('a', 'b'),
+    );
+    expect(minHeight(css)).toBe('600px');
+  });
+
+  it('folds the item size limits at every level', () => {
+    const css = emitStylesheet(
+      doc(config, [
+        item({
+          id: 'a',
+          maxH: 120,
+          y: { mode: 'start', offset: 0, size: 100 },
+          at: { sm: { y: { mode: 'start', offset: 200, size: 400 } } },
+        }),
+      ]),
+      'i',
+      ranks('a'),
+    );
+    expect(minHeight(css)).toBe('320px');
+  });
+});
+
 describe('emitStylesheet — direction and responsive:"scale"', () => {
   it('swaps the physical edges under direction:"rtl"', () => {
     const cfg: ContainerConfig = { base: { width: 1000, height: 800 }, height: 'fill', direction: 'rtl' };
@@ -725,6 +962,72 @@ describe('emitStylesheet — direction and responsive:"scale"', () => {
     expect(css).not.toContain('@container');
     expect(css).not.toContain('container-type');
     expect(css.split('\n')[0]).toContain('width:1440px');
+  });
+
+  it('does not fold at overrides into min-height under scale (tier 2 does not apply)', () => {
+    // Every size is inactive under `scale` — the sheet emits no @container
+    // blocks at all — so a min-height that folded one in would contradict the
+    // item rule sitting right below it.
+    const cfg: ContainerConfig = {
+      base: { width: 400 },
+      responsive: 'scale',
+      sizes: { lg: { maxWidth: 1000 } },
+    };
+    const it0 = item({
+      id: 'a',
+      y: { mode: 'start', offset: 0, size: 100 },
+      at: { lg: { y: { mode: 'start', offset: 800, size: 100 } } },
+    });
+    const sheet = parseSheet(emitStylesheet(doc(cfg, [it0]), 'i', ranks('a')));
+    expect(sheet.rules[0].decls['min-height']).toBe('100px');
+    expect(sheet.rules[1].decls).toMatchObject({ top: '0px', height: '100px' });
+  });
+});
+
+describe('height:"auto" y-axis degradation (documented deviation from §1.6 wording)', () => {
+  // Non-`start` y modes are NOT rewritten to `start` placements: they are
+  // FROZEN at `base.height` and emitted as fixed px, which is the same number
+  // `resolveItem` returns. These tests pin the three properties that make the
+  // deviation safe: JS/CSS agreement at every width, no `bottom` against an
+  // auto height, and stability under a reencode round-trip.
+  const modes: AxisMode[] = ['start', 'end', 'both', 'center', 'scale'];
+  const mkItem = (mode: AxisMode) =>
+    item({
+      id: mode,
+      y:
+        mode === 'both'
+          ? { mode, start: 20, end: 20 }
+          : ({ mode, offset: 40, size: 100 } as AxisPlacement),
+    });
+
+  it('agrees with resolveItem at every width, with and without base.height', () => {
+    for (const height of [600, undefined]) {
+      const config: ContainerConfig = { base: { width: 1000, height }, stackBelow: 0 };
+      const items = modes.map(mkItem);
+      const sheet = parseSheet(emitStylesheet(doc(config, items), 'i', ranks()));
+      for (const width of [1000, 700, 480, 320]) {
+        for (const it0 of items) {
+          const decls = computed(sheet, `[data-vzb="i"] [data-vzb-item="${it0.id}"]`, width);
+          // never anchor to a height the container does not have
+          expect(decls.bottom, `${it0.id} @${width}`).toBe('auto');
+          const expected = resolveItem(it0, config, width, 4242 /* measured: ignored */);
+          expect(evaluate(decls.top, 0), `top ${it0.id} @${width}`).toBeCloseTo(expected.y, 6);
+          expect(evaluate(decls.height, 0), `height ${it0.id} @${width}`).toBeCloseTo(expected.h, 6);
+        }
+      }
+    }
+  });
+
+  it('is reencode-stable: a commit rewrites the mode without moving the item', () => {
+    const config: ContainerConfig = { base: { width: 1000, height: 600 }, stackBelow: 0 };
+    const it0 = mkItem('end');
+    const rect = resolveItem(it0, config, 1000, undefined);
+    const pair = reencodeRect(rect, config, 1000, undefined, 'start', 'end');
+    expect(pair.y).toEqual({ mode: 'start', offset: 460, size: 100 });
+    expect(resolveAxis(pair.y, 600)).toEqual({ pos: rect.y, size: rect.h });
+    const before = emitStylesheet(doc(config, [it0]), 'i', ranks(it0.id));
+    const after = emitStylesheet(doc(config, [{ ...it0, y: pair.y }]), 'i', ranks(it0.id));
+    expect(after).toBe(before);
   });
 });
 
@@ -864,7 +1167,7 @@ describe('determinism', () => {
   it('survives an empty document', () => {
     const css = emitStylesheet(doc({ base: { width: 0 } }, []), 'i', new Map());
     expect(css).toBe(
-      '[data-vzb="i"]{position:relative;container-type:inline-size;container-name:vzb-i;min-height:0px}',
+      '[data-vzb="i"]{position:relative;isolation:isolate;container-type:inline-size;container-name:vzb-i;min-height:0px}',
     );
   });
 });

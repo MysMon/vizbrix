@@ -13,6 +13,18 @@
  * | Cmd/Ctrl + ] / [       | bring to front / send to back                      |
  * | Cmd/Ctrl + Z / ⇧Z      | undo / redo                                        |
  *
+ * While tap-to-place is armed the container owns two of them: Escape cancels the
+ * placement from anywhere inside it, and Enter/Space hands the item over to a
+ * keyboard grab — the two sessions are never armed at once.
+ *
+ * ## Whose keys are these?
+ *
+ * The listener is on the CONTAINER, so every keystroke typed into a widget
+ * passes through it. Anything that handles its own keys — form controls,
+ * `contenteditable`, links, buttons — keeps them (`isEditableTarget`), unless it
+ * opts back in with `data-vzb-keys`. The exception is a live grab, which owns
+ * the keyboard until it ends wherever focus drifted to.
+ *
  * ## Why nudges commit immediately
  *
  * A nudge could batch into a grab-like session that commits after an idle
@@ -57,6 +69,66 @@ export interface KeyboardSensor {
   cancelGrab(): void;
 }
 
+export interface KeyboardHooks {
+  /**
+   * Disarm tap-to-place. `silent` suppresses the cancellation announcement for
+   * a hand-over to the keyboard grab, which announces "grabbed" itself.
+   */
+  cancelPlace(silent?: boolean): void;
+}
+
+/**
+ * Elements that own their own keystrokes. The sensor listens on the CONTAINER,
+ * so without this every character typed into a widget's `<input>` would also be
+ * a layout command — Backspace deleting the item being the worst of them.
+ */
+const EDITABLE_TAGS: ReadonlySet<string> = new Set([
+  'INPUT',
+  'TEXTAREA',
+  'SELECT',
+  'OPTION',
+  'BUTTON',
+  'A',
+]);
+
+/**
+ * Does the event come from something inside the item that handles its own keys?
+ *
+ * The walk stops at the item root (`data-vzb-item`) — the item div itself is a
+ * `role="button"` and must keep its shortcuts — and at the container. Content
+ * that genuinely wants the layout shortcuts (a custom control, a canvas) opts
+ * back in with `data-vzb-keys`.
+ *
+ * Structurally typed against the composed path so the sensor stays testable
+ * with hand-built events and works across shadow boundaries.
+ */
+function isEditableTarget(path: readonly unknown[], container: unknown): boolean {
+  for (const node of path) {
+    if (node === container) return false;
+    if (!node || typeof node !== 'object') continue;
+    const el = node as {
+      tagName?: string;
+      isContentEditable?: boolean;
+      getAttribute?: (name: string) => string | null;
+    };
+    if (typeof el.getAttribute === 'function' && el.getAttribute('data-vzb-keys') !== null) {
+      return false;
+    }
+    if (el.isContentEditable === true) return true;
+    if (typeof el.tagName === 'string' && EDITABLE_TAGS.has(el.tagName)) return true;
+    if (typeof el.getAttribute === 'function') {
+      const ce = el.getAttribute('contenteditable');
+      if (ce !== null && ce !== 'false') return true;
+      if (el.getAttribute('data-vzb-item') !== null) return false;
+    }
+  }
+  return false;
+}
+
+function isCommitKey(key: string): boolean {
+  return key === 'Enter' || key === ' ' || key === 'Spacebar';
+}
+
 const ARROWS: Record<string, { x: number; y: number }> = {
   ArrowLeft: { x: -1, y: 0 },
   ArrowRight: { x: 1, y: 0 },
@@ -76,7 +148,10 @@ function contains(container: HTMLElement, node: unknown): boolean {
   return container.contains?.(node as Node) === true;
 }
 
-export function createKeyboardSensor<TData>(rt: InteractRuntime<TData>): KeyboardSensor {
+export function createKeyboardSensor<TData>(
+  rt: InteractRuntime<TData>,
+  hooks: KeyboardHooks,
+): KeyboardSensor {
   const machine = rt.machine;
 
   function onKeyDown(evt: Event): void {
@@ -84,6 +159,24 @@ export function createKeyboardSensor<TData>(rt: InteractRuntime<TData>): Keyboar
     if (!rt.isEdit()) return;
     const container = rt.container();
     if (!container) return;
+
+    const path = pathOf(ev);
+    const placing = machine.placing();
+
+    // Tap-to-place is modal: while it is armed Escape ends it from ANYWHERE in
+    // the container — including the move button that armed it and a focused
+    // field — because there is otherwise no way back out of a state where the
+    // next press anywhere teleports the item.
+    if (placing !== null && ev.key === 'Escape') {
+      ev.preventDefault?.();
+      hooks.cancelPlace();
+      return;
+    }
+
+    // A grab owns the keyboard until it ends, wherever focus drifted to;
+    // everything else yields to content that handles its own keys.
+    const grab = machine.grab();
+    if (grab === null && isEditableTarget(path, container)) return;
 
     const mod = ev.metaKey === true || ev.ctrlKey === true;
     if (mod && (ev.key === 'z' || ev.key === 'Z')) {
@@ -93,9 +186,16 @@ export function createKeyboardSensor<TData>(rt: InteractRuntime<TData>): Keyboar
       return;
     }
 
-    // A grab owns the keyboard until it ends, wherever focus drifted to.
-    const grab = machine.grab();
-    const id = grab?.id ?? itemIdFromPath(pathOf(ev), container);
+    // Enter/Space on the armed item hands tap-to-place over to a keyboard grab
+    // — the keyboard's own way of choosing a location. The two phases can never
+    // be armed at once (§10): the grab is what moves the item from here on.
+    if (placing !== null && grab === null && isCommitKey(ev.key)) {
+      ev.preventDefault?.();
+      beginGrab(placing);
+      return;
+    }
+
+    const id = grab?.id ?? itemIdFromPath(path, container);
     if (id === null || id === undefined) return;
     if (rt.store.getItem(id) === undefined) return;
 
@@ -178,7 +278,15 @@ export function createKeyboardSensor<TData>(rt: InteractRuntime<TData>): Keyboar
     }
     // Immediate commit: one arrow press, one transaction, one undo step.
     const result = rt.commitRects(new Map<string, Rect>([[id, next]]), 'move', 'keyboard');
-    if (result.status === 'applied') rt.announce('moved', id);
+    if (result.status === 'applied') {
+      rt.announce('moved', id);
+      return;
+    }
+    // §1.12: a `forbid` landing is refused, so the key IS dead here (the comment
+    // above about the snap jump never being dead holds only for `allow`). Say so
+    // politely — arrow keys repeat, and an assertive interrupt per press would
+    // make the dashboard unusable with a screen reader.
+    if (result.status === 'blocked') rt.announce('canceled', id, rect, undefined, 'polite');
   }
 
   /* ---------------- grab session ---------------- */
@@ -188,6 +296,10 @@ export function createKeyboardSensor<TData>(rt: InteractRuntime<TData>): Keyboar
     const item = rt.store.getItem(id);
     const rect = rt.store.getItemView(id)?.rect;
     if (!item || !rect || item.locked === true) return;
+    // Arming a grab disarms tap-to-place: two live sessions on one item let the
+    // grab's stale ghost overwrite the landing on drop. Silent — `grabbed` is
+    // the announcement that describes the state the user is now in.
+    if (machine.placing() !== null) hooks.cancelPlace(true);
     machine.setGrab({
       id,
       startRect: rect,
@@ -201,10 +313,17 @@ export function createKeyboardSensor<TData>(rt: InteractRuntime<TData>): Keyboar
   function drop(): void {
     const grab = machine.grab();
     if (!grab) return;
+    // One grab session = ONE transaction, however many arrow presses it took.
+    // Committed BEFORE the grab is torn down: a `forbid` landing is refused
+    // (§1.12) and the item then stays grabbed, so the user can keep moving it
+    // instead of being dropped into a state the document rejected.
+    const result = rt.commitRects(new Map<string, Rect>([[grab.id, grab.rect]]), 'move', 'keyboard');
+    if (result.status === 'blocked') {
+      rt.announce('canceled', grab.id, grab.rect);
+      return;
+    }
     machine.setGrab(null);
     rt.idle();
-    // One grab session = ONE transaction, however many arrow presses it took.
-    rt.commitRects(new Map<string, Rect>([[grab.id, grab.rect]]), 'move', 'keyboard');
     rt.announce('dropped', grab.id);
   }
 

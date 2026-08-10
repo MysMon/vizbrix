@@ -21,6 +21,14 @@ import { useVizbrixContext } from './context';
 interface Cache {
   doc: unknown;
   order: readonly string[];
+  /**
+   * The instance id the cached CSS is SCOPED TO. Not part of the store's state,
+   * and therefore easy to forget: every selector in the sheet is prefixed with
+   * `[data-vzb="…"]` and the container is named after it, so serving the cached
+   * string after the id changed leaves a sheet that matches nothing — every item
+   * silently loses its position.
+   */
+  id: string;
   css: string;
 }
 
@@ -47,7 +55,9 @@ export const StyleSheet = memo(function StyleSheet(): ReactElement {
     const doc = store.getDoc();
     const order = store.getOrder();
     const prev = cache.current;
-    if (prev !== null && prev.doc === doc && prev.order === order) return prev.css;
+    if (prev !== null && prev.doc === doc && prev.order === order && prev.id === instanceId) {
+      return prev.css;
+    }
 
     const zRanks = new Map<string, number>();
     for (const id of order) {
@@ -55,7 +65,7 @@ export const StyleSheet = memo(function StyleSheet(): ReactElement {
       if (view) zRanks.set(id, view.zIndex);
     }
     const css = emitStylesheet(doc as unknown as LayoutDoc<never>, instanceId, zRanks);
-    cache.current = { doc, order, css };
+    cache.current = { doc, order, id: instanceId, css };
     return css;
   }, [store, instanceId]);
 

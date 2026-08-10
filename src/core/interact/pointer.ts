@@ -41,6 +41,7 @@ import {
   boxBetween,
   collisionValid,
   copyGuides,
+  logicalHandle,
   resizeRect,
   sameRect,
   translated,
@@ -87,6 +88,9 @@ export interface Sensor {
 }
 
 const ZERO: Rect = { x: 0, y: 0, w: 0, h: 0 };
+
+/** Capture, so a scroll on any ancestor of the container is seen. */
+const SCROLL_OPTS = { capture: true, passive: true } as const;
 
 function modsOf(ev: { shiftKey: boolean; altKey: boolean; metaKey: boolean; ctrlKey: boolean }): Modifiers {
   return {
@@ -150,6 +154,7 @@ export function createPointerSensor<TData>(
     doc.addEventListener('keydown', onGestureKey as EventListener);
     doc.addEventListener('keyup', onGestureKey as EventListener);
     doc.addEventListener('contextmenu', onContextMenu as EventListener);
+    doc.addEventListener('scroll', onScroll as EventListener, SCROLL_OPTS);
   }
 
   function unbindDocument(): void {
@@ -162,6 +167,21 @@ export function createPointerSensor<TData>(
     doc.removeEventListener('keydown', onGestureKey as EventListener);
     doc.removeEventListener('keyup', onGestureKey as EventListener);
     doc.removeEventListener('contextmenu', onContextMenu as EventListener);
+    doc.removeEventListener('scroll', onScroll as EventListener, SCROLL_OPTS);
+  }
+
+  /**
+   * The marquee is the only frame path that converts an ABSOLUTE client point,
+   * so it is the only one the container box moving out from under the gesture
+   * can corrupt: drag and resize work off client DELTAS and are scroll
+   * invariant. Re-measuring here (and only here) keeps the "one measurement per
+   * gesture" rule true for the paths it exists to protect.
+   */
+  function onScroll(): void {
+    const session = machine.session();
+    if (!session || session.kind !== 'marquee') return;
+    rt.measure();
+    schedule();
   }
 
   /**
@@ -205,6 +225,11 @@ export function createPointerSensor<TData>(
     if (!el) return;
     if (typeof ev.button === 'number' && ev.button !== 0) return;
 
+    // Taking the pointer abandons a keyboard grab — including on the press that
+    // lands a tap-to-place, which would otherwise leave the grab's stale ghost
+    // alive to overwrite the landing on its own drop.
+    if (machine.grab() !== null) hooks.cancelGrab();
+
     if (machine.placing() !== null) {
       rt.measure();
       hooks.completePlace(rt.toLocal(ev.clientX, ev.clientY));
@@ -215,8 +240,6 @@ export function createPointerSensor<TData>(
 
     const target = resolvePointerTarget(pathOf(ev), el);
     if (target.kind === 'outside') return;
-
-    if (machine.grab() !== null) hooks.cancelGrab();
 
     let kind: GestureKind = 'marquee';
     let selectOnly = false;
@@ -316,9 +339,11 @@ export function createPointerSensor<TData>(
     if (press.kind === 'drag' && press.id !== null) {
       const selection = rt.store.getSelection();
       const inSelection = selection.includes(press.id);
+      // Same criterion the snapshot uses: an item with no snapshot rect has no
+      // start rect either, and dragging it would commit a rect made up here.
       ids = (inSelection ? selection.slice() : [press.id]).filter((id) => {
-        const item = rt.store.getItem(id);
-        return item !== undefined && item.locked !== true;
+        const view = rt.store.getItemView(id);
+        return view !== undefined && view.item.locked !== true && view.item.hidden !== true;
       });
       if (ids.length === 0) return;
       if (!inSelection) rt.store.setSelection(ids);
@@ -328,7 +353,14 @@ export function createPointerSensor<TData>(
 
     const snapshot = rt.snapshot(ids);
     const startRects = new Map<string, Rect>();
-    for (const id of ids) startRects.set(id, snapshot.rects.get(id) ?? ZERO);
+    for (const id of ids) {
+      const rect = snapshot.rects.get(id);
+      if (rect) startRects.set(id, rect);
+    }
+    if (press.kind !== 'marquee' && startRects.size === 0) return;
+    // `ids` and `startRects` stay in lockstep — a marquee moves nothing, so both
+    // are empty there.
+    ids = [...startRects.keys()];
 
     indexItems(ids);
     if (press.kind !== 'marquee') rt.engine().begin(snapshot);
@@ -432,6 +464,9 @@ export function createPointerSensor<TData>(
     if (id === undefined || handle === null) return;
     const start = session.startRects.get(id);
     if (!start) return;
+    // The rect math and the engine's handle mask are both LOGICAL; the compass
+    // id the adapter rendered is physical (§1.26).
+    const edge = logicalHandle(handle, rt.isRtl());
 
     const item = rt.store.getItem(id);
     const limits = {
@@ -444,13 +479,13 @@ export function createPointerSensor<TData>(
     };
 
     const raw = pointerDelta();
-    let rect = resizeRect(start, handle, raw.x, raw.y, limits);
+    let rect = resizeRect(start, edge, raw.x, raw.y, limits);
     // The engine corrects the edge(s) the handle drives, which is exactly what
     // the pointer delta drives — so the correction folds back into the delta and
     // the rect is recomputed once, keeping min/max and aspect authoritative.
-    const snap = rt.engine().query(rect, 'resize', handle, rt.bypass(mods));
+    const snap = rt.engine().query(rect, 'resize', edge, rt.bypass(mods));
     if (snap.dx !== 0 || snap.dy !== 0) {
-      rect = resizeRect(start, handle, raw.x + snap.dx, raw.y + snap.dy, limits);
+      rect = resizeRect(start, edge, raw.x + snap.dx, raw.y + snap.dy, limits);
     }
 
     const rects = new Map<string, Rect>([[id, rect]]);
@@ -515,7 +550,12 @@ export function createPointerSensor<TData>(
       finish();
       return;
     }
+    // The last rAF may never have run: every move since it was scheduled is
+    // still unprocessed, so the frame is recomputed at the RELEASE position
+    // before it is committed. Without this the item lands where the last frame
+    // that happened to run put it, short of where the user let go.
     unschedule();
+    frame();
     commit();
     finish();
   }

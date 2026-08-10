@@ -28,7 +28,8 @@ import type { InteractRuntime } from './machine';
 export interface PlaceController {
   begin(id: string): void;
   complete(point: { x: number; y: number }): void;
-  cancel(): void;
+  /** `silent` skips the announcement when another session takes the item over. */
+  cancel(silent?: boolean): void;
 }
 
 function clamp(value: number, max: number | undefined): number {
@@ -58,10 +59,12 @@ export function createPlaceController<TData>(rt: InteractRuntime<TData>): PlaceC
     const id = machine.placing();
     if (id === null) return;
     const rect = rt.store.getItemView(id)?.rect;
-    machine.setPlacing(null);
-    rt.idle();
     // The dashboard went read-only between the two taps.
-    if (!rect || !rt.isEdit()) return;
+    if (!rect || !rt.isEdit()) {
+      machine.setPlacing(null);
+      rt.idle();
+      return;
+    }
 
     const height = rt.layoutHeight();
     const target: Rect = {
@@ -71,16 +74,25 @@ export function createPlaceController<TData>(rt: InteractRuntime<TData>): PlaceC
       h: rect.h,
     };
 
-    rt.commitRects(new Map<string, Rect>([[id, target]]), 'move', 'place');
+    // §1.12: landing on a forbidden overlap is refused. Placing stays ARMED so
+    // the next tap is another attempt — disarming would strand a keyboard user
+    // who has no way to see why the item did not move.
+    const result = rt.commitRects(new Map<string, Rect>([[id, target]]), 'move', 'place');
+    if (result.status === 'blocked') {
+      rt.announce('canceled', id, target);
+      return;
+    }
+    machine.setPlacing(null);
+    rt.idle();
     rt.announce('placed', id);
   }
 
-  function cancel(): void {
+  function cancel(silent?: boolean): void {
     const id = machine.placing();
     if (id === null) return;
     machine.setPlacing(null);
     rt.idle();
-    rt.announce('canceled', id);
+    if (silent !== true) rt.announce('canceled', id);
   }
 
   return { begin, complete, cancel };

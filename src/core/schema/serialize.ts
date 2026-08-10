@@ -52,9 +52,11 @@ export interface SerializeOptions {
 /**
  * Serializes a layout document to canonical JSON.
  *
- * @throws {TypeError} only on a cyclic `data` / `$unknown` payload — the same
- * failure `JSON.stringify` would produce. Everything the schema itself owns is
- * always serializable.
+ * @throws {TypeError} only on a cyclic (or BigInt) `data` / `$unknown` payload
+ * — the same failure `JSON.stringify` would produce. Everything the schema
+ * itself owns is always serializable, and nesting depth is never a failure
+ * mode: any document `load()` accepts, this writes back (the opaque writer
+ * uses an explicit stack, not recursion).
  */
 export function serialize<TData = undefined>(
   doc: LayoutDoc<TData>,
@@ -188,13 +190,26 @@ function writeLen(len: unknown, ctx: Ctx, depth: number): string {
 /* opaque JSON writer                                                  */
 /* ------------------------------------------------------------------ */
 
-/**
- * JSON.stringify semantics with one change: object keys are sorted. Used for
- * `$unknown` payloads, consumer `data`, and any key the schema does not know.
- */
-function writeOpaque(value: unknown, ctx: Ctx, depth: number): string {
-  const v = unwrap(value);
+/** One in-progress container in {@link writeOpaque}'s explicit stack. */
+interface OpaqueFrame {
+  node: object;
+  depth: number;
+  isArray: boolean;
+  /** Own keys, sorted; empty for arrays. */
+  keys: string[];
+  /** How many children have been emitted so far. */
+  index: number;
+  /** Emitted JSON text per child, parallel to `keys` for records. */
+  parts: string[];
+}
 
+/**
+ * JSON text for anything that is not a traversable object.
+ *
+ * @returns the text, or `undefined` when `v` is an object/array that has to be
+ * walked.
+ */
+function writeScalar(v: unknown): string | undefined {
   if (v === null) return 'null';
   switch (typeof v) {
     case 'boolean':
@@ -206,37 +221,82 @@ function writeOpaque(value: unknown, ctx: Ctx, depth: number): string {
     case 'bigint':
       throw new TypeError('vizbrix: cannot serialize a BigInt value');
     case 'object':
-      break;
+      return undefined;
     default:
       // undefined / function / symbol — callers filter these out; reaching
       // here means it sat inside an array, where JSON writes null.
       return 'null';
   }
+}
 
-  const obj = v as object;
-  if (ctx.stack.has(obj)) {
-    throw new TypeError('vizbrix: cannot serialize a cyclic structure');
-  }
-  ctx.stack.add(obj);
-  try {
-    if (Array.isArray(obj)) {
-      return array(
-        obj.map((entry) => writeOpaque(entry, ctx, depth + 1)),
-        ctx,
-        depth,
-      );
+function ownKeysOf(record: Record<string, unknown>): string[] {
+  return Object.keys(record)
+    .filter((k) => isEmittable(record[k]))
+    .sort();
+}
+
+/**
+ * JSON.stringify semantics with one change: object keys are sorted. Used for
+ * `$unknown` payloads, consumer `data`, and any key the schema does not know.
+ *
+ * Deliberately ITERATIVE (explicit stack, post-order). `load()` accepts a
+ * document whose opaque payload is nested thousands of levels deep, so a
+ * recursive writer would answer that document with a `RangeError` from the save
+ * path — a document you can open but can never write back. The contract is
+ * therefore: whatever `load()` accepts, `serialize()` emits.
+ */
+function writeOpaque(value: unknown, ctx: Ctx, depth: number): string {
+  const root = unwrap(value);
+  const scalar = writeScalar(root);
+  if (scalar !== undefined) return scalar;
+
+  const stack: OpaqueFrame[] = [];
+
+  const push = (node: object, at: number): void => {
+    if (ctx.stack.has(node)) {
+      throw new TypeError('vizbrix: cannot serialize a cyclic structure');
     }
-    const record = obj as Record<string, unknown>;
-    const keys = Object.keys(record)
-      .filter((k) => isEmittable(record[k]))
-      .sort();
-    return object(
-      keys.map((k) => [k, writeOpaque(record[k], ctx, depth + 1)] as const),
-      ctx,
-      depth,
-    );
-  } finally {
-    ctx.stack.delete(obj);
+    ctx.stack.add(node);
+    const isArray = Array.isArray(node);
+    stack.push({
+      node,
+      depth: at,
+      isArray,
+      keys: isArray ? [] : ownKeysOf(node as Record<string, unknown>),
+      index: 0,
+      parts: [],
+    });
+  };
+
+  push(root as object, depth);
+
+  for (;;) {
+    const frame = stack[stack.length - 1]!;
+    const length = frame.isArray ? (frame.node as unknown[]).length : frame.keys.length;
+
+    if (frame.index < length) {
+      const child = frame.isArray
+        ? (frame.node as unknown[])[frame.index]
+        : (frame.node as Record<string, unknown>)[frame.keys[frame.index]!];
+      frame.index++;
+      const unwrapped = unwrap(child);
+      const text = writeScalar(unwrapped);
+      if (text !== undefined) frame.parts.push(text);
+      else push(unwrapped as object, frame.depth + 1);
+      continue;
+    }
+
+    stack.pop();
+    ctx.stack.delete(frame.node);
+    const text = frame.isArray
+      ? array(frame.parts, ctx, frame.depth)
+      : object(
+          frame.keys.map((key, i) => [key, frame.parts[i]!] as const),
+          ctx,
+          frame.depth,
+        );
+    if (stack.length === 0) return text;
+    stack[stack.length - 1]!.parts.push(text);
   }
 }
 

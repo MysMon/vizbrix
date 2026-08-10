@@ -159,7 +159,7 @@ describe('normalize()', () => {
       ],
     };
     const once = normalize(damaged);
-    const twice = normalize(once);
+    const twice = normalize(once as unknown);
     expect(twice).toEqual(once);
     expect(JSON.stringify(twice)).toBe(JSON.stringify(once));
   });
@@ -279,5 +279,101 @@ describe('defineLayout()', () => {
     expect(raw.anchor).toBeUndefined();
     expect(raw.tags).toEqual(['keep']);
     expect(raw.$unknown).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* regressions                                                         */
+/* ------------------------------------------------------------------ */
+
+describe('damaged size overrides are dropped, not repaired to 0×0', () => {
+  const withOverride = (override: unknown) => ({
+    version: 1,
+    container: { base: { width: 1000 }, sizes: { sm: { maxWidth: 500 } } },
+    items: [{ id: 'a', z: 'a0', x: start(10, 100), y: start(20, 50), at: { sm: override } }],
+  });
+
+  const overrideOf = (doc: { items: readonly unknown[] }) =>
+    (doc.items[0] as { at?: Record<string, Record<string, unknown>> }).at?.sm;
+
+  it('keeps the base placement when an override placement is unreadable', () => {
+    for (const damaged of [
+      { x: { mode: 'bogus' } },
+      { x: null },
+      { x: { mode: 'start' } }, // required terms missing → would resolve to 0×0
+      { x: { mode: 'start', offset: 5 } },
+      { y: { mode: 'both', start: 1 } },
+    ]) {
+      const issues: Issue[] = [];
+      const doc = normalize(withOverride(damaged), issues);
+      const override = overrideOf(doc);
+      expect(override).toBeDefined();
+      expect(override!.x).toBeUndefined();
+      expect(override!.y).toBeUndefined();
+      // the base placement survives untouched
+      expect(doc.items[0].x).toEqual(start(10, 100));
+      expect(issues.some((i) => /dropped/.test(i.message))).toBe(true);
+    }
+  });
+
+  it('still accepts a well-formed override', () => {
+    const doc = normalize(withOverride({ x: { mode: 'start', offset: 1, size: 2 } }));
+    expect(overrideOf(doc)!.x).toEqual(start(1, 2));
+  });
+
+  it('stays a fixpoint after dropping the damage (L3)', () => {
+    const once = normalize(withOverride({ x: { mode: 'bogus' }, hidden: true }));
+    const twice = normalize(once as unknown);
+    expect(twice).toEqual(once);
+  });
+});
+
+describe('a `__proto__` key never mutates a prototype and never disappears', () => {
+  /** JSON.parse is the only way to build an OWN `__proto__` data property. */
+  const parse = (text: string): unknown => JSON.parse(text) as unknown;
+
+  it('parks an unknown `__proto__` document key in $unknown (law L2)', () => {
+    const doc = normalize(
+      parse('{"version":1,"container":{"base":{"width":100}},"items":[],"__proto__":{"evil":1}}'),
+    ) as unknown as { $unknown?: Record<string, unknown> };
+    expect(doc.$unknown).toBeDefined();
+    expect(Object.prototype.hasOwnProperty.call(doc.$unknown!, '__proto__')).toBe(true);
+    expect(Object.keys(doc.$unknown!)).toContain('__proto__');
+    expect(Object.getPrototypeOf(doc.$unknown!)).toBe(Object.prototype);
+    expect(({} as Record<string, unknown>).evil).toBeUndefined();
+  });
+
+  it('parks an unknown `__proto__` item key too', () => {
+    const doc = normalize(
+      parse(
+        '{"version":1,"container":{"base":{"width":100}},"items":[{"id":"a","z":"a0","x":{"mode":"start","offset":0,"size":1},"y":{"mode":"start","offset":0,"size":1},"__proto__":{"evil":1}}]}',
+      ),
+    );
+    const parked = (doc.items[0] as unknown as { $unknown?: Record<string, unknown> }).$unknown;
+    expect(parked && Object.keys(parked)).toContain('__proto__');
+  });
+
+  it('keeps a `__proto__` size name and stays a fixpoint (L3)', () => {
+    const once = normalize(
+      parse(
+        '{"version":1,"container":{"base":{"width":100},"sizes":{"__proto__":{"maxWidth":700}}},"items":[]}',
+      ),
+    );
+    const sizes = once.container.sizes as unknown as Record<string, unknown>;
+    expect(Object.keys(sizes)).toEqual(['__proto__']);
+    expect(Object.getPrototypeOf(sizes)).toBe(Object.prototype);
+    expect(normalize(once as unknown)).toEqual(once);
+  });
+
+  it('keeps a `__proto__` override name and stays a fixpoint (L3)', () => {
+    const once = normalize(
+      parse(
+        '{"version":1,"container":{"base":{"width":100}},"items":[{"id":"a","z":"a0","x":{"mode":"start","offset":0,"size":1},"y":{"mode":"start","offset":0,"size":1},"at":{"__proto__":{"hidden":true}}}]}',
+      ),
+    );
+    const at = (once.items[0] as unknown as { at: Record<string, unknown> }).at;
+    expect(Object.keys(at)).toEqual(['__proto__']);
+    expect(Object.getPrototypeOf(at)).toBe(Object.prototype);
+    expect(normalize(once as unknown)).toEqual(once);
   });
 });

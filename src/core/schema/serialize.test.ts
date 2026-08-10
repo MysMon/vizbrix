@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LayoutDoc } from './types';
 import { serialize } from './serialize';
 import { normalize } from './normalize';
+import { load } from './load';
 
 function doc(items: unknown[], extra: Record<string, unknown> = {}): LayoutDoc<unknown> {
   return normalize<unknown>({
@@ -119,5 +120,52 @@ describe('serialize()', () => {
       stray: 'kept',
     } as unknown as LayoutDoc);
     expect(JSON.parse(text)).toMatchObject({ stray: 'kept' });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* regressions                                                         */
+/* ------------------------------------------------------------------ */
+
+describe('serialize() — pathological payloads', () => {
+  /** A payload nested far deeper than any recursive writer could survive. */
+  function nest(levels: number): Record<string, unknown> {
+    let deep: Record<string, unknown> = { leaf: 1 };
+    for (let i = 0; i < levels; i++) deep = { n: deep };
+    return deep;
+  }
+
+  it('writes a document load() accepted, however deep its opaque payload', () => {
+    const outcome = load({
+      version: 1,
+      container: { base: { width: 100 } },
+      items: [],
+      deep: nest(5000),
+    });
+    expect(outcome.status).toBe('ok');
+    if (outcome.status !== 'ok') return;
+    // The contract is symmetric: anything load() reads back, serialize() writes.
+    const text = serialize(outcome.doc, { indent: 0 });
+    expect(JSON.parse(text)).toBeTypeOf('object');
+  });
+
+  it('writes a deep payload with indentation too', () => {
+    const d = doc([{ id: 'a', z: 'a0', x: startPlacement, y: startPlacement, data: nest(2500) }]);
+    expect(() => serialize(d)).not.toThrow();
+  });
+
+  it('re-emits a parked `__proto__` key verbatim (law L2)', () => {
+    const outcome = load(
+      '{"version":1,"container":{"base":{"width":100}},"items":[],"__proto__":{"evil":1}}',
+    );
+    expect(outcome.status).toBe('ok');
+    if (outcome.status !== 'ok') return;
+    const text = serialize(outcome.doc);
+    expect(text).toContain('"__proto__"');
+    const again = JSON.parse(text) as { $unknown: Record<string, unknown> };
+    expect(Object.prototype.hasOwnProperty.call(again.$unknown, '__proto__')).toBe(true);
+    expect(again.$unknown.__proto__).toEqual({ evil: 1 });
+    // …and the round trip is stable, which is what law L2 actually promises.
+    expect(serialize(normalize(again))).toBe(text);
   });
 });

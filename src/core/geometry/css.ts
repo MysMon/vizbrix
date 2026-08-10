@@ -30,7 +30,7 @@ import type {
 } from '../schema/types';
 import { activeSizesAt, foldItem, stackOrder } from './cascade';
 import { lenParts, roundPct, roundPx } from './len';
-import { resolveAxisClamped, resolveItem, yExtentOf } from './resolve';
+import { resolveAxisClamped, yExtentOf } from './resolve';
 
 /** Gap between items in the tier-3 single-column stack, in px. */
 const STACK_GAP = 8;
@@ -42,12 +42,36 @@ const DEFAULT_STACK_BELOW = 480;
 /* ------------------------------------------------------------------ */
 
 /**
+ * Characters that must never reach the emitted text literally.
+ *
+ * The stylesheet is injected into an HTML `<style>` element, which is a RAW
+ * TEXT element: the HTML tokenizer does not parse escapes or entities inside
+ * it, it only scans for `</style`. A document-supplied id of `</style><script>`
+ * would therefore END the style element and inject markup — a stored XSS —
+ * even though it is perfectly well-formed as far as CSS is concerned.
+ *
+ * A CSS *hex* escape (`\3c `) is the fix: the CSS parser resolves it back to
+ * the literal character, so selectors keep matching, while the character never
+ * appears in the text the HTML parser sees. A backslash escape (`\<`) is NOT
+ * enough — it leaves the `<` literal in the text.
+ */
+function isHtmlUnsafe(ch: string): boolean {
+  return ch === '<' || ch === '>' || ch === '&';
+}
+
+/** `\3c ` — a CSS hex escape, always space-terminated so it cannot run on. */
+function hexEscape(c: number): string {
+  return `\\${c.toString(16)} `;
+}
+
+/**
  * Escape a string for use as a CSS identifier — an own implementation of the
- * CSSOM `CSS.escape` algorithm, because core never touches the DOM.
+ * CSSOM `CSS.escape` algorithm, because core never touches the DOM, plus the
+ * HTML-context hardening described on {@link isHtmlUnsafe}.
  *
  * Non-ASCII code points pass through (they are valid ident characters);
- * control characters and a leading digit are hex-escaped; everything else
- * outside `[-_a-zA-Z0-9]` gets a backslash.
+ * control characters, a leading digit and the HTML-significant characters are
+ * hex-escaped; everything else outside `[-_a-zA-Z0-9]` gets a backslash.
  */
 export function cssEscapeIdent(s: string): string {
   const str = typeof s === 'string' ? s : String(s);
@@ -66,7 +90,9 @@ export function cssEscapeIdent(s: string): string {
       (i === 0 && c >= 0x30 && c <= 0x39) ||
       (i === 1 && c >= 0x30 && c <= 0x39 && first === 0x2d)
     ) {
-      out += `\\${c.toString(16)} `;
+      out += hexEscape(c);
+    } else if (isHtmlUnsafe(str.charAt(i))) {
+      out += hexEscape(c);
     } else if (
       c >= 0x80 ||
       c === 0x2d ||
@@ -83,7 +109,15 @@ export function cssEscapeIdent(s: string): string {
   return out;
 }
 
-/** Escape a string for a double-quoted CSS string (attribute selector value). */
+/**
+ * Escape a string for a double-quoted CSS string (attribute selector value).
+ *
+ * Quotes and backslashes are backslash-escaped (they only matter to the CSS
+ * parser); the HTML-significant characters are hex-escaped so the emitted text
+ * can never contain a tag opener — see {@link isHtmlUnsafe}. Hex escapes are
+ * resolved by the CSS parser, so `[data-vzb-item="a\3c \2f b"]` still matches
+ * an element whose attribute value is literally `a</b`.
+ */
 function cssEscapeString(s: string): string {
   const str = typeof s === 'string' ? s : String(s);
   let out = '';
@@ -91,7 +125,8 @@ function cssEscapeString(s: string): string {
     const c = str.charCodeAt(i);
     const ch = str.charAt(i);
     if (c === 0) out += '�';
-    else if ((c >= 0x01 && c <= 0x1f) || c === 0x7f) out += `\\${c.toString(16)} `;
+    else if ((c >= 0x01 && c <= 0x1f) || c === 0x7f) out += hexEscape(c);
+    else if (isHtmlUnsafe(ch)) out += hexEscape(c);
     else if (ch === '"' || ch === '\\') out += `\\${ch}`;
     else out += ch;
   }
@@ -115,6 +150,19 @@ function fmt(n: number): string {
 
 function px(n: number): string {
   return `${fmt(roundPx(n))}px`;
+}
+
+/**
+ * A breakpoint as a container-query length — EXACT, never rounded.
+ *
+ * Placement values round to the persisted 2-decimal precision, but a breakpoint
+ * is a comparison bound: rounding `maxWidth: 600.005` to `600.01px` would make
+ * the query true over a band where `activeSizesAt` (which compares the raw
+ * number) says the size is inactive, and the JS fold and the CSS cascade would
+ * disagree there.
+ */
+function queryPx(n: number): string {
+  return `${fmt(Number.isFinite(n) ? n : 0)}px`;
 }
 
 /** A `Len` as a CSS value: `12px`, `50%` or `calc(50% + 12px)`. */
@@ -266,6 +314,49 @@ function placementDecls(item: LayoutItemBase, config: ContainerConfig, rtl: bool
 /* Stylesheet                                                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The `min-height` an `height: 'auto'` container needs: the lowest bottom edge
+ * any item reaches at ANY cascade level, not just at the base placement.
+ *
+ * The container is not its own query container, so a `min-height` re-emitted
+ * inside an `@container` block would never apply to it (that is also why the
+ * tier-3 block's root rule is inert). The reserved height therefore has to
+ * cover every level at once: a size override that pushes an item down would
+ * otherwise overflow a container sized only for the base layout.
+ *
+ * This is width-independent: under `'auto'` the y axis always resolves against
+ * `base.height` (spec §1.6), so the only thing that varies across widths is
+ * WHICH `at` overrides are folded in — hence one pass per cascade level, with
+ * each level's own `hidden` state honored.
+ *
+ * `responsive: 'scale'` emits no `@container` blocks at all, so it has exactly
+ * one level: the base one. Folding `at` overrides there would contradict the
+ * item rules in the very same sheet.
+ */
+function containerMinHeight(
+  items: readonly LayoutItemBase[],
+  config: ContainerConfig,
+  scaled: boolean,
+): number {
+  const yExtent = yExtentOf(config);
+  const levels: string[][] = [[]];
+  if (!scaled) {
+    const sizeNames = activeSizesAt(config, 0);
+    for (let k = 0; k < sizeNames.length; k++) levels.push(sizeNames.slice(0, k + 1));
+  }
+  let bottom = 0;
+  for (const active of levels) {
+    for (const item of items) {
+      const folded = foldItem(item, active);
+      if (folded.hidden) continue;
+      const { pos, size } = resolveAxisClamped(folded.y, yExtent, folded.minH, folded.maxH);
+      const b = pos + size;
+      if (b > bottom) bottom = b;
+    }
+  }
+  return bottom;
+}
+
 function rule(selector: string, decls: readonly string[], indent = ''): string {
   return `${indent}${selector}{${decls.join(';')}}`;
 }
@@ -300,7 +391,12 @@ export function emitStylesheet(
   const out: string[] = [];
 
   /* --- container ------------------------------------------------- */
-  const containerDecls = ['position:relative'];
+  // `isolation:isolate` guarantees the container is a stacking context in
+  // EVERY mode. Reflow mode gets one from `container-type` anyway, but scale
+  // mode does not — and derived sparse z-ranks can drift negative under
+  // repeated sendToBack, which would otherwise paint items behind the
+  // container's own background there.
+  const containerDecls = ['position:relative', 'isolation:isolate'];
   if (scaled) {
     // No container queries in scale mode: the adapter wraps a fixed base-size
     // canvas and scales it with a transform on the WRAPPER (never on items).
@@ -311,14 +407,7 @@ export function emitStylesheet(
   if (config.height === 'fill') {
     containerDecls.push('height:100%');
   } else {
-    let bottom = 0;
-    for (const item of items) {
-      if (item.hidden) continue;
-      const r = resolveItem(item, config, baseWidth, config.base?.height);
-      const b = r.y + r.h;
-      if (b > bottom) bottom = b;
-    }
-    containerDecls.push(`min-height:${px(bottom)}`);
+    containerDecls.push(`min-height:${px(containerMinHeight(items, config, scaled))}`);
   }
   out.push(rule(root, containerDecls));
 
@@ -359,7 +448,8 @@ export function emitStylesheet(
         emitted.set(item.id, { decls: joined, hidden });
       }
       if (body.length === 0) continue;
-      out.push(`@container ${containerName} (max-width:${px(maxWidth)}){`);
+      // `(max-width: X)` is INCLUSIVE, matching `activeSizesAt`'s `W <= maxWidth`.
+      out.push(`@container ${containerName} (max-width:${queryPx(maxWidth)}){`);
       out.push(...body);
       out.push('}');
     }
@@ -367,17 +457,24 @@ export function emitStylesheet(
     /* --- tier-3 stack blocks ------------------------------------- */
     const stackBelow = isNum(config.stackBelow) ? config.stackBelow : DEFAULT_STACK_BELOW;
     if (stackBelow > 0 && items.length > 0) {
-      const stackWidth = Math.max(stackBelow - 1, 0);
       const yExtent = yExtentOf(config);
       // The stack must win over the size blocks above, so it is emitted last —
       // which means any declared size SMALLER than stackBelow needs its stacked
       // form re-emitted here too, or it would never take effect. Visibility is
       // deliberately untouched: `display` is already correct at every width
       // from the base rule and the size blocks.
-      const levels = [stackWidth];
+      //
+      // Level 0 covers the whole stacked band, which is the STRICT inequality
+      // `W < stackBelow` (`isStackedAt`). It is emitted with range syntax
+      // rather than `(max-width: stackBelow − 1px)`, which disagreed with the
+      // JS predicate on every fractional width in between — and degenerated to
+      // `(max-width: 0px)` for `stackBelow <= 1`. Sizes active across that
+      // whole band are folded at `stackBelow` itself; a size whose `maxWidth`
+      // is below it is active only on a sub-band and gets its own level.
+      const levels = [stackBelow];
       for (const name of sizeNames) {
         const maxWidth = config.sizes?.[name]?.maxWidth ?? 0;
-        if (maxWidth < stackWidth) levels.push(maxWidth);
+        if (maxWidth < stackBelow) levels.push(maxWidth);
       }
 
       const prevStack = new Map<string, string>();
@@ -423,12 +520,20 @@ export function emitStylesheet(
           prevStack.set(item.id, joined);
         }
         if (body.length === 0) continue;
-        out.push(`@container ${containerName} (max-width:${px(width)}){`);
+        const q = level === 0 ? `(width < ${queryPx(width)})` : `(max-width:${queryPx(width)})`;
+        out.push(`@container ${containerName} ${q}{`);
         out.push(...body);
         out.push('}');
       }
     }
   }
 
-  return out.join('\n');
+  // Belt and braces. Every document-supplied string above goes through an
+  // escaper that hex-escapes `<`, so this can never fire — but the return value
+  // is destined for a `<style>` element filled with `dangerouslySetInnerHTML`,
+  // and "no tag opener by construction" is worth asserting at the boundary
+  // rather than trusting every future edit to remember. Only `</` is neutered:
+  // a lone `<` is legitimate (and inert in raw text) as the tier-3 range query.
+  const sheet = out.join('\n');
+  return sheet.includes('</') ? sheet.replace(/<\//g, '\\3c /') : sheet;
 }

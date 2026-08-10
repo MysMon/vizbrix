@@ -35,34 +35,64 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./schema": {
-      "types": "./dist/schema.d.ts",
-      "import": "./dist/schema.js",
-      "require": "./dist/schema.cjs"
+      "import": {
+        "types": "./dist/schema.d.ts",
+        "default": "./dist/schema.js"
+      },
+      "require": {
+        "types": "./dist/schema.d.cts",
+        "default": "./dist/schema.cjs"
+      }
     },
     "./react": {
-      "types": "./dist/react/index.d.ts",
-      "import": "./dist/react/index.js",
-      "require": "./dist/react/index.cjs"
+      "import": {
+        "types": "./dist/react/index.d.ts",
+        "default": "./dist/react/index.js"
+      },
+      "require": {
+        "types": "./dist/react/index.d.cts",
+        "default": "./dist/react/index.cjs"
+      }
     },
     "./react/view": {
-      "types": "./dist/react/view.d.ts",
-      "import": "./dist/react/view.js",
-      "require": "./dist/react/view.cjs"
+      "import": {
+        "types": "./dist/react/view.d.ts",
+        "default": "./dist/react/view.js"
+      },
+      "require": {
+        "types": "./dist/react/view.d.cts",
+        "default": "./dist/react/view.cjs"
+      }
     },
     "./react/static": {
-      "types": "./dist/react/static.d.ts",
-      "import": "./dist/react/static.js",
-      "require": "./dist/react/static.cjs"
+      "import": {
+        "types": "./dist/react/static.d.ts",
+        "default": "./dist/react/static.js"
+      },
+      "require": {
+        "types": "./dist/react/static.d.cts",
+        "default": "./dist/react/static.cjs"
+      }
     },
     "./locales/ja": {
-      "types": "./dist/locales/ja.d.ts",
-      "import": "./dist/locales/ja.js",
-      "require": "./dist/locales/ja.cjs"
+      "import": {
+        "types": "./dist/locales/ja.d.ts",
+        "default": "./dist/locales/ja.js"
+      },
+      "require": {
+        "types": "./dist/locales/ja.d.cts",
+        "default": "./dist/locales/ja.cjs"
+      }
     }
   },
   "scripts": {

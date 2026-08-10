@@ -156,8 +156,39 @@ function midpointFraction(a: string, b: string | null): string {
   return ALPHABET[digitA] + midpointFraction(a.slice(1), null);
 }
 
+/**
+ * Extends `key` until it is no longer a PROPER PREFIX of the upper bound.
+ *
+ * Bisection legitimately produces a prefix — `midpointFraction` returns `b`'s
+ * leading digit whenever the two candidate digits are consecutive — and the
+ * spec forbids it (§1.8, §5: "never a prefix of `b`") for a concrete reason:
+ * a prefix leaves no room below `b` for the two jitter digits `keyBetween`
+ * appends, so EVERY jittered candidate sorts past the bound and the fallback
+ * silently strips the jitter. The collision resistance would disappear exactly
+ * on the inserts most likely to collide (two clients splitting the same gap).
+ *
+ * Appending the midpoint of the bound's remaining digits keeps the key strictly
+ * below `b` while guaranteeing a digit position where it is strictly smaller —
+ * which is what makes any suffix, jitter included, still sort below `b`. Each
+ * pass adds at least one character and the result stays under `b`, so the loop
+ * ends within `b.length` passes.
+ */
+function avoidPrefixOf(key: string, b: string | null): string {
+  if (b === null) return key;
+  let out = key;
+  while (out.length < b.length && b.startsWith(out)) {
+    out += midpointFraction('', b.slice(out.length));
+  }
+  return out;
+}
+
 /** The deterministic (unjittered) key strictly between `a` and `b`. */
 function generateKeyBetween(a: string | null, b: string | null): string {
+  return avoidPrefixOf(generateKeyCandidate(a, b), b);
+}
+
+/** Plain bisection, before the prefix-of-upper-bound guarantee is enforced. */
+function generateKeyCandidate(a: string | null, b: string | null): string {
   if (a !== null && b !== null && a >= b) {
     throw new RangeError(
       `fractional: lower bound ${JSON.stringify(a)} >= upper bound ${JSON.stringify(b)}`,
@@ -215,13 +246,12 @@ function randomNonZeroDigitIndex(): number {
  * e.g. two offline clients both inserting "between the same two items" won't
  * usually produce the identical key). The jitter is generated first, then
  * verified to still land strictly inside `(a, b)` — appending characters can
- * only make a string *larger*, so the lower bound is never at risk, but a
- * candidate that happens to be a proper prefix of `b` (e.g. candidate `"aX"`
- * against upper bound `"aXQ"`) can be pushed past `b` by jitter. On that
- * failure the call deterministically falls back to the unjittered candidate,
- * which is always valid because it comes straight from
- * {@link generateKeyBetween}. The trailing jitter digit is never `'0'`, so a
- * jittered result never ends in the lowest digit.
+ * only make a string *larger*, so the lower bound is never at risk, and the
+ * upper bound is not either because {@link generateKeyBetween} guarantees the
+ * candidate is never a proper prefix of `b` (see {@link avoidPrefixOf}); the
+ * verification is kept as a belt-and-braces check, and on failure the call
+ * deterministically falls back to the unjittered candidate. The trailing jitter
+ * digit is never `'0'`, so a jittered result never ends in the lowest digit.
  *
  * @param a lower bound (exclusive), or `null` for no lower bound
  * @param b upper bound (exclusive), or `null` for no upper bound

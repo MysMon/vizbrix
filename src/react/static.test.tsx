@@ -71,6 +71,19 @@ describe('VizbrixStatic', () => {
     expect(html).toContain('data-locked=""');
   });
 
+  // Verified: the ONLY difference from `<VizbrixView>`'s markup is this
+  // attribute, and React reports it as an unpatched hydration mismatch. That is
+  // the documented contract (docs/ssr.md: server-render the interactive
+  // component itself if you want to hydrate), so the value is pinned here —
+  // changing it to `"view"` would make the two trees hydrate cleanly, and is a
+  // documentation decision rather than a silent one.
+  it('marks the root as the static surface', () => {
+    const html = renderToString(
+      <VizbrixStatic layout={makeDoc()}>{(item) => <p>{item.id}</p>}</VizbrixStatic>,
+    );
+    expect(html).toContain('data-vzb-mode="static"');
+  });
+
   it('writes no inline placement and no event handlers', () => {
     const html = renderToString(
       <VizbrixStatic layout={makeDoc()}>{(item) => <p>{item.id}</p>}</VizbrixStatic>,

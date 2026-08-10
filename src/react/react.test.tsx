@@ -9,11 +9,13 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { StrictMode, useState } from 'react';
+import { StrictMode, useEffect, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { act, cleanup, render } from '@testing-library/react';
-import type { LayoutDoc, Transaction } from '../core/schema/types';
+import type { AxisPlacement, LayoutDoc, Transaction } from '../core/schema/types';
 import { defineLayout } from '../core/schema/normalize';
+import { createStore } from '../core/store/store';
+import { syncIncomingDoc } from './context';
 import { Vizbrix } from './Vizbrix';
 import { VizbrixView } from './View';
 import { useHistory, useSelection, useVizbrix } from './hooks';
@@ -35,6 +37,20 @@ function makeDoc(): LayoutDoc {
       { id: 'b', x: 200, y: 0, w: 100, h: 50 },
     ],
   });
+}
+
+const at = (offset: number, size: number): AxisPlacement => ({ mode: 'start', offset, size });
+
+/** Hand-authored `z` keys the fractional generator cannot use as bounds. */
+function handAuthored(): LayoutDoc {
+  return {
+    version: 1,
+    container: { base: { width: 1000 }, stackBelow: 0 },
+    items: [
+      { id: 'a', z: 'b0', x: at(10, 100), y: at(10, 50) },
+      { id: 'b', z: 'c0', x: at(300, 100), y: at(10, 50) },
+    ],
+  };
 }
 
 interface Probed {
@@ -209,6 +225,130 @@ describe('controlled mode', () => {
     expect(store.getDoc()).toBe(second);
     expect(store.getOrder()).toEqual(['a']);
     expect(document.querySelectorAll('[data-vzb-item]')).toHaveLength(1);
+  });
+
+  // A parent that maps the emitted doc into a fresh object hands back a NEW
+  // identity after every commit. Treating that as an assertion issues a
+  // replaceDoc, and replaceDoc is the load boundary: it clears history. Undo
+  // would be dead for every consumer that stores anything but the raw object.
+  it('keeps undo/redo alive when the parent stores a transformed copy', () => {
+    const seen: LayoutDoc[] = [];
+
+    function Host(): ReactElement {
+      const [doc, setDoc] = useState(makeDoc);
+      return (
+        <Vizbrix
+          layout={doc}
+          mode="edit"
+          onLayoutChange={(next) => {
+            seen.push(next);
+            // Structurally identical, every object along the way brand new.
+            setDoc({ ...next, items: next.items.map((entry) => ({ ...entry })) });
+          }}
+        >
+          {children}
+        </Vizbrix>
+      );
+    }
+
+    render(<Host />);
+    const store = probed!.api.store;
+
+    act(() => {
+      store.moveItem('a', { x: 40, y: 10, w: 100, h: 50 });
+    });
+    expect(seen).toHaveLength(1);
+    expect(store.getItemView('a')!.rect.x).toBe(40);
+    expect(store.canUndo()).toBe(true);
+
+    act(() => {
+      store.undo();
+    });
+    expect(store.getItemView('a')!.rect.x).toBe(0);
+    // And the undo itself is a commit, which the transforming parent echoes.
+    expect(store.canRedo()).toBe(true);
+  });
+
+  // The store REPAIRS a document as it installs it (non-canonical `z` keys), so
+  // a hand-authored prop is never `=== getDoc()` afterwards and would look like
+  // a fresh assertion forever — each replay clearing history and re-installing
+  // the keys `keyBetween()` rejects.
+  // The store REPAIRS a document as it adopts it (non-canonical `z` keys), so
+  // `getDoc() !== theProp` from the very first render. Replaying the prop over
+  // that repair on mount clears history and re-keys the whole document, and
+  // before the store repaired at the `replaceDoc` door it also reinstalled the
+  // exact keys `keyBetween()` rejects.
+  it('does not replay a hand-authored prop over the repair on mount', () => {
+    const source = handAuthored();
+    let atFirstRender: LayoutDoc<unknown> | null = null;
+    let live: VizbrixApi<unknown>['store'] | null = null;
+
+    function Capture(): null {
+      const { store } = useVizbrix<unknown>();
+      live = store;
+      // Renders run before effects: this is the document as CONSTRUCTED.
+      atFirstRender ??= store.getDoc() as LayoutDoc<unknown>;
+      return null;
+    }
+
+    render(
+      <Vizbrix layout={source} mode="edit" onLayoutChange={() => {}}>
+        {(item) => (item.id === 'a' ? <Capture /> : null)}
+      </Vizbrix>,
+    );
+
+    const store = live as VizbrixApi<unknown>['store'] | null;
+    expect(atFirstRender).not.toBeNull();
+    expect(atFirstRender).not.toBe(source);
+    expect(atFirstRender!.items.map((entry) => entry.z)).not.toEqual(['b0', 'c0']);
+    // No mount-time replaceDoc: the store still holds exactly what it built.
+    expect(store!.getDoc()).toBe(atFirstRender);
+    expect(() => store!.bringToFront('a')).not.toThrow();
+  });
+
+  it('treats a repaired document as an echo at the syncIncomingDoc boundary', () => {
+    const source = handAuthored() as LayoutDoc<unknown>;
+    const store = createStore(source, { mode: 'edit' });
+    const adopted = store.getDoc();
+    expect(adopted).not.toBe(source);
+    // How every surface calls it on mount: the seed is what the store adopted.
+    expect(syncIncomingDoc(store, source, source)).toBe(false);
+    expect(store.getDoc()).toBe(adopted);
+  });
+
+  it('still applies a genuinely different document', () => {
+    const store = createStore(makeDoc() as LayoutDoc<unknown>, { mode: 'edit' });
+    const next = defineLayout({
+      container: { base: { width: 1000 }, stackBelow: 0 },
+      items: [{ id: 'a', x: 0, y: 0, w: 100, h: 50 }],
+    }) as LayoutDoc<unknown>;
+    expect(syncIncomingDoc(store, next, null)).toBe(true);
+    expect(store.getOrder()).toEqual(['a']);
+  });
+
+  // React runs CHILD effects before parent effects, so a descendant seeding the
+  // dashboard from its own mount effect commits before the tx sink exists.
+  it('reports a transaction committed from a child effect', () => {
+    const onLayoutChange = vi.fn<(doc: LayoutDoc, tx: Transaction) => void>();
+
+    function Seeder(): null {
+      const { store } = useVizbrix();
+      useEffect(() => {
+        store.moveItem('a', { x: 42, y: 10, w: 100, h: 50 });
+      }, [store]);
+      return null;
+    }
+
+    render(
+      <Vizbrix defaultLayout={makeDoc()} mode="edit" onLayoutChange={onLayoutChange}>
+        {(item) => (item.id === 'a' ? <Seeder /> : null)}
+      </Vizbrix>,
+    );
+
+    expect(onLayoutChange).toHaveBeenCalledTimes(1);
+    const [doc, tx] = onLayoutChange.mock.calls[0];
+    expect(tx.label.kind).toBe('move');
+    expect(doc.items.find((entry) => entry.id === 'a')).toBeTruthy();
   });
 });
 
@@ -395,6 +535,71 @@ describe('generated stylesheet', () => {
   });
 });
 
+describe('generated stylesheet scope', () => {
+  it('re-emits the sheet when instanceId changes', () => {
+    const doc = makeDoc();
+    const { rerender } = render(
+      <Vizbrix defaultLayout={doc} instanceId="one" mode="edit">
+        {children}
+      </Vizbrix>,
+    );
+    expect(styleText()).toContain('[data-vzb="one"]');
+
+    rerender(
+      <Vizbrix defaultLayout={doc} instanceId="two" mode="edit">
+        {children}
+      </Vizbrix>,
+    );
+    // The document did not change, but every selector in the sheet did: a sheet
+    // still scoped to `one` matches nothing, so every item loses its position.
+    expect(document.querySelector('[data-vzb]')!.getAttribute('data-vzb')).toBe('two');
+    expect(styleText()).toContain('[data-vzb="two"]');
+    expect(styleText()).not.toContain('[data-vzb="one"]');
+  });
+});
+
+describe('renderIncompatible', () => {
+  const originalWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+
+  afterEach(() => {
+    if (originalWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', originalWidth);
+    else delete (HTMLElement.prototype as unknown as { clientWidth?: number }).clientWidth;
+  });
+
+  it('leaves the dashboard measured and interactive once the document recovers', () => {
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => 640,
+    });
+
+    const future = { ...makeDoc(), compat: 99 } as LayoutDoc;
+    const good = makeDoc();
+    const fallback = (): ReactNode => <p data-testid="nope">cannot show this</p>;
+
+    const { rerender } = render(
+      <Vizbrix layout={future} mode="edit" renderIncompatible={fallback} onLayoutChange={() => {}}>
+        {children}
+      </Vizbrix>,
+    );
+    expect(document.querySelectorAll('[data-vzb-item]')).toHaveLength(0);
+
+    rerender(
+      <Vizbrix layout={good} mode="edit" renderIncompatible={fallback} onLayoutChange={() => {}}>
+        {children}
+      </Vizbrix>,
+    );
+
+    expect(document.querySelectorAll('[data-vzb-item]')).toHaveLength(2);
+    // The canvas mounted a commit AFTER the effects that measure it and attach
+    // the controller first ran; both must have re-run against the real node.
+    expect(probed!.api.store.getContainerWidth()).toBe(640);
+    act(() => {
+      probed!.api.beginPlace('a');
+    });
+    expect(probed!.api.store.getInteraction()).toMatchObject({ phase: 'placing', id: 'a' });
+  });
+});
+
 describe('hydration', () => {
   it('hydrates server markup with no mismatch', async () => {
     const { renderToString } = await import('react-dom/server');
@@ -431,7 +636,12 @@ describe('hydration', () => {
 });
 
 describe('the render callback', () => {
-  it('picks up a new callback identity without leaving items stale', () => {
+  // §1.25: a new `children` identity must NOT re-render every item — an inline
+  // arrow is a new function on every parent render, and in controlled mode the
+  // parent re-renders after every commit. The callback is ref-backed and the
+  // box is updated silently; the documented cost is a stale-render window, and
+  // `renderKey` is the documented escape hatch.
+  it('does not re-render items when only the callback identity changed', () => {
     const doc = makeDoc();
     const { rerender } = render(
       <Vizbrix defaultLayout={doc} mode="edit">
@@ -445,7 +655,60 @@ describe('the render callback', () => {
         {(item) => <span>second:{item.id}</span>}
       </Vizbrix>,
     );
+    // Nothing about item `a` changed, so item `a` did not render.
+    expect(itemEl('a').textContent).toBe('first:a');
+  });
+
+  it('uses the CURRENT callback the next time an item renders for its own reason', () => {
+    const doc = makeDoc();
+    const { rerender } = render(
+      <Vizbrix defaultLayout={doc} mode="edit">
+        {(item) => (
+          <span>
+            first:{item.id}:{Math.round(item.rect.x)}
+            {item.id === 'a' ? <Probe /> : null}
+          </span>
+        )}
+      </Vizbrix>,
+    );
+    const store = probed!.api.store;
+
+    rerender(
+      <Vizbrix defaultLayout={doc} mode="edit">
+        {(item) => (
+          <span>
+            second:{item.id}:{Math.round(item.rect.x)}
+            {item.id === 'a' ? <Probe /> : null}
+          </span>
+        )}
+      </Vizbrix>,
+    );
+
+    act(() => {
+      store.moveItem('a', { x: 40, y: 0, w: 100, h: 50 });
+    });
+    // No stale-forever class: the commit that re-rendered `a` used the callback
+    // the parent last passed, not the one it was mounted with.
+    expect(itemEl('a').textContent).toBe('second:a:40');
+    expect(itemEl('b').textContent).toBe('first:b:200');
+  });
+
+  it('adopts a new callback everywhere when renderKey changes', () => {
+    const doc = makeDoc();
+    const { rerender } = render(
+      <Vizbrix defaultLayout={doc} mode="edit" renderKey="v1">
+        {(item) => <span>first:{item.id}</span>}
+      </Vizbrix>,
+    );
+    expect(itemEl('a').textContent).toBe('first:a');
+
+    rerender(
+      <Vizbrix defaultLayout={doc} mode="edit" renderKey="v2">
+        {(item) => <span>second:{item.id}</span>}
+      </Vizbrix>,
+    );
     expect(itemEl('a').textContent).toBe('second:a');
+    expect(itemEl('b').textContent).toBe('second:b');
   });
 
   it('exposes a drag-handle marker and a tap-to-place button', () => {
@@ -551,6 +814,34 @@ describe('container measurement', () => {
     // The base width survives: a hidden container must not restack everything.
     expect(probed!.api.store.getContainerWidth()).toBe(1000);
     expect(probed!.api.store.isStacked()).toBe(false);
+  });
+
+  it('measures the fractional content box, not the rounded clientWidth', () => {
+    // `clientWidth` is an integer; `@container (max-width:767px)` is evaluated
+    // against the fractional content box. At 767.5px CSS keeps the wide rules,
+    // so the resolved rects must not switch to the narrow ones.
+    pinClientWidth(767);
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function rect(): DOMRect {
+      return { width: 767.5, height: 400 } as DOMRect;
+    };
+
+    try {
+      const doc = defineLayout({
+        container: { base: { width: 1000 }, sizes: { md: { maxWidth: 767 } }, stackBelow: 0 },
+        items: [{ id: 'a', x: 0, y: 0, w: 100, h: 50 }],
+      });
+      render(
+        <Vizbrix defaultLayout={doc} mode="edit">
+          {children}
+        </Vizbrix>,
+      );
+
+      expect(probed!.api.store.getContainerWidth()).toBe(767.5);
+      expect(probed!.api.store.getActiveSizes()).toEqual([]);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalRect;
+    }
   });
 
   it("scales the canvas wrapper under responsive:'scale'", () => {

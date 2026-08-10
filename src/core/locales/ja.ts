@@ -76,7 +76,7 @@ export const ja: VizbrixStrings = {
   },
 
   placingStarted(ctx: ItemStringContext): string {
-    return `「${ctx.label}」を配置します。配置場所を選んでEnterキーを押してください。Escapeキーでキャンセルします。`;
+    return `「${ctx.label}」を配置します。配置場所をクリックまたはタップしてください。EnterキーまたはSpaceキーで矢印キー移動に切り替え、Escapeキーでキャンセルします。`;
   },
 
   placed(ctx: ItemStringContext): string {

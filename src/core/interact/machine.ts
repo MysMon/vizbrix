@@ -115,6 +115,33 @@ export interface ResizeModifiers {
   maxH?: number;
 }
 
+/** Physical ↔ logical handle mirror on the x axis (see `logicalHandle`). */
+const MIRROR_X: Readonly<Record<HandleId, HandleId>> = Object.freeze({
+  n: 'n',
+  s: 's',
+  e: 'w',
+  w: 'e',
+  ne: 'nw',
+  nw: 'ne',
+  se: 'sw',
+  sw: 'se',
+});
+
+/**
+ * Compass handle ids are PHYSICAL — the adapter pins `e` to `right: -5` and
+ * gives it a physical cursor — while every rect here is LOGICAL (`Rect.x` runs
+ * from the container's start edge, which is its right edge under
+ * `direction: 'rtl'`). So under RTL the physical-east handle drives the logical
+ * START edge, and the handle has to be mirrored on x before it reaches the rect
+ * math or the snap engine's handle mask.
+ *
+ * The physical id stays the one reported on the transient channel: the overlay
+ * should name the handle the user actually grabbed.
+ */
+export function logicalHandle(handle: HandleId, rtl: boolean): HandleId {
+  return rtl ? MIRROR_X[handle] : handle;
+}
+
 function movesStart(handle: HandleId, ax: 'x' | 'y'): boolean {
   return ax === 'x'
     ? handle === 'w' || handle === 'nw' || handle === 'sw'
@@ -134,6 +161,49 @@ function clamp(n: number, min: number | undefined, max: number | undefined): num
   return v < 0 ? 0 : v;
 }
 
+function limit(n: number | undefined): number | undefined {
+  return typeof n === 'number' && Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * Clamp a ratio-locked size into the min/max box WITHOUT breaking the ratio.
+ *
+ * **Precedence under Shift:** the aspect ratio outranks any single-axis limit,
+ * but never the min/max box as a whole. The pair is scaled — not clamped per
+ * axis — down to fit both maxima and then up to meet both minima, so the result
+ * is the ratio-preserving rect closest to what the pointer asked for that still
+ * lives inside every bound. `null` means the box admits no rect at this ratio
+ * (e.g. `minW` with a `maxH` that contradicts it); the caller then falls back to
+ * independent per-axis clamping, because a hard limit is a promise about the
+ * document and Shift is only a promise about the gesture.
+ */
+function clampToAspect(w: number, h: number, mod: ResizeModifiers): { w: number; h: number } | null {
+  if (!(w > 0) || !(h > 0)) return null;
+  const minW = limit(mod.minW);
+  const minH = limit(mod.minH);
+  const maxW = limit(mod.maxW);
+  const maxH = limit(mod.maxH);
+
+  let s = 1;
+  if (maxW !== undefined) s = Math.min(s, maxW / w);
+  if (maxH !== undefined) s = Math.min(s, maxH / h);
+  let nw = w * s;
+  let nh = h * s;
+
+  let g = 1;
+  if (minW !== undefined && nw > 0) g = Math.max(g, minW / nw);
+  if (minH !== undefined && nh > 0) g = Math.max(g, minH / nh);
+  nw *= g;
+  nh *= g;
+
+  if (!(nw > 0) || !(nh > 0)) return null;
+  // Growing to meet a minimum may have re-broken a maximum: the two bounds are
+  // mutually exclusive at this ratio.
+  if (maxW !== undefined && nw > maxW + EPS) return null;
+  if (maxH !== undefined && nh > maxH + EPS) return null;
+  return { w: nw, h: nh };
+}
+
 /**
  * Resize `start` by dragging `handle` through `(dx, dy)` — the pointer delta in
  * container-logical px.
@@ -148,7 +218,9 @@ function clamp(n: number, min: number | undefined, max: number | undefined): num
  *
  * Min/max clamping happens last and re-derives the position from the anchor, so
  * hitting `minW` while dragging the west handle pins the east edge rather than
- * dragging the whole item along.
+ * dragging the whole item along. Under `aspect` the clamp applies to the w/h
+ * PAIR (see `clampToAspect`) so a limit shrinks the rect along its diagonal
+ * instead of flattening it.
  */
 export function resizeRect(
   start: Rect,
@@ -170,6 +242,7 @@ export function resizeRect(
   if (hEnd) h = start.h + factor * dy;
   else if (hStart) h = start.h - factor * dy;
 
+  let clamped = false;
   if (mod.aspect === true && start.w > 0 && start.h > 0) {
     const ratio = start.w / start.h;
     const drivesX = wStart || wEnd;
@@ -179,10 +252,21 @@ export function resizeRect(
     const driveX = drivesX && (!drivesY || Math.abs(w - start.w) >= Math.abs(h - start.h));
     if (driveX) h = w / ratio;
     else w = h * ratio;
+
+    // Clamping the two axes independently here would silently break the ratio
+    // Shift just promised, so the min/max box is applied to the PAIR instead.
+    const fitted = clampToAspect(w, h, mod);
+    if (fitted) {
+      w = fitted.w;
+      h = fitted.h;
+      clamped = true;
+    }
   }
 
-  w = clamp(w, mod.minW, mod.maxW);
-  h = clamp(h, mod.minH, mod.maxH);
+  if (!clamped) {
+    w = clamp(w, mod.minW, mod.maxW);
+    h = clamp(h, mod.minH, mod.maxH);
+  }
 
   const right = start.x + start.w;
   const bottom = start.y + start.h;
@@ -476,7 +560,17 @@ export interface InteractRuntime<TData = undefined> {
     source: TxSource,
   ): TxResult;
 
-  announce(kind: AnnounceKind, id: string, rect?: Rect, direction?: 'front' | 'back'): void;
+  /**
+   * `tone` overrides the default tone of `kind` — a refused nudge reuses the
+   * `canceled` string but must not interrupt the user on every arrow press.
+   */
+  announce(
+    kind: AnnounceKind,
+    id: string,
+    rect?: Rect,
+    direction?: 'front' | 'back',
+    tone?: 'assertive' | 'polite',
+  ): void;
 
   /* clock — injected so nothing here reads a DOM global */
   raf(cb: () => void): number;

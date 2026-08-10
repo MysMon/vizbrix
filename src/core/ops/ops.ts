@@ -67,18 +67,25 @@ function sameLen(a: Len, b: Len): boolean {
  * Structural equality, `Len`-aware: `{px: 12}` and `12` denote the same
  * length, so an op that re-encodes one as the other is a no-op, not a change.
  *
+ * Len-awareness is SCHEMA knowledge and stops at the schema's edge. Consumer
+ * `data` is opaque — `{px: 12}` there is just an object, and treating it as
+ * interchangeable with the number `12` would swallow a real `setData` as a
+ * no-op. So `lenAware` is switched off for everything under a `data` key (and
+ * for the `setData`/`rebaseOk` entry points), while placements, overrides and
+ * the rest of an item keep it.
+ *
  * Bounded by {@link MAX_DEPTH} — consumer `data` is opaque and may be cyclic,
  * and a comparison that recurses forever would take the dashboard down.
  * Past the bound the check tightens to reference identity, which can only
  * report a false INEQUALITY: the caller then treats a no-op as a change, or a
  * rebase as conflicted, and skips. Never the other way round.
  */
-function deepEqual(a: unknown, b: unknown, depth = 0): boolean {
+function deepEqual(a: unknown, b: unknown, depth = 0, lenAware = true): boolean {
   if (Object.is(a, b)) return true;
   if (depth >= MAX_DEPTH) return false;
   if (typeof a !== typeof b) {
     // The one legitimate cross-type equality: a bare px number vs `{px: n}`.
-    return isLenLike(a) && isLenLike(b) && sameLen(a, b);
+    return lenAware && isLenLike(a) && isLenLike(b) && sameLen(a, b);
   }
   if (typeof a !== 'object' || a === null || b === null) return false;
 
@@ -88,11 +95,13 @@ function deepEqual(a: unknown, b: unknown, depth = 0): boolean {
     const x = a as unknown[];
     const y = b as unknown[];
     if (x.length !== y.length) return false;
-    for (let i = 0; i < x.length; i++) if (!deepEqual(x[i], y[i], depth + 1)) return false;
+    for (let i = 0; i < x.length; i++) {
+      if (!deepEqual(x[i], y[i], depth + 1, lenAware)) return false;
+    }
     return true;
   }
   if (!isPlainObject(a) || !isPlainObject(b)) return false;
-  if (isLenLike(a) && isLenLike(b)) return sameLen(a, b);
+  if (lenAware && isLenLike(a) && isLenLike(b)) return sameLen(a, b);
 
   const objA: Record<string, unknown> = a;
   const objB: Record<string, unknown> = b;
@@ -100,9 +109,15 @@ function deepEqual(a: unknown, b: unknown, depth = 0): boolean {
   if (keysA.length !== Object.keys(objB).length) return false;
   for (const key of keysA) {
     if (!Object.prototype.hasOwnProperty.call(objB, key)) return false;
-    if (!deepEqual(objA[key], objB[key], depth + 1)) return false;
+    // Below a `data` key the payload is the consumer's, not the schema's.
+    if (!deepEqual(objA[key], objB[key], depth + 1, lenAware && key !== 'data')) return false;
   }
   return true;
+}
+
+/** {@link deepEqual} for opaque consumer payloads: no `Len` interpretation. */
+function deepEqualData(a: unknown, b: unknown): boolean {
+  return deepEqual(a, b, 0, false);
 }
 
 /** Placement equality up to `Len` canonicalization. Modes must match exactly. */
@@ -343,7 +358,7 @@ export function applyOp<T>(doc: LayoutDoc<T>, op: Op): LayoutDoc<T> {
       const has = Object.prototype.hasOwnProperty.call(item, 'data');
       if (after === undefined) {
         if (!has) return doc;
-      } else if (has && deepEqual(dataOf(item), after)) {
+      } else if (has && deepEqualData(dataOf(item), after)) {
         return doc;
       }
       const next = patchItem(item, (draft) => {
@@ -474,7 +489,7 @@ export function rebaseOk<T>(doc: LayoutDoc<T>, op: Op): boolean {
     case 'setData': {
       const has = Object.prototype.hasOwnProperty.call(item, 'data');
       if (op.after === undefined) return !has || dataOf(item) === undefined;
-      return has && deepEqual(dataOf(item), op.after);
+      return has && deepEqualData(dataOf(item), op.after);
     }
     default:
       return false;

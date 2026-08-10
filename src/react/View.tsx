@@ -41,6 +41,12 @@ export interface VizbrixViewProps<TData = undefined> {
   strings?: VizbrixStrings;
   getLabel?: (item: LayoutItemBase) => string;
   children: ItemRenderer<TData>;
+  /**
+   * Escape hatch for a `children` callback that closes over changing state.
+   * Items do not re-render when `children` merely changes identity (§1.25 — see
+   * `context.ts`); change `renderKey` to force them to.
+   */
+  renderKey?: unknown;
 }
 
 function defaultLabel(item: LayoutItemBase): string {
@@ -59,6 +65,7 @@ export function VizbrixView<TData = undefined>(props: VizbrixViewProps<TData>): 
     strings = defaultStrings,
     getLabel = defaultLabel,
     children,
+    renderKey,
   } = props;
 
   const reactId = useId();
@@ -69,18 +76,32 @@ export function VizbrixView<TData = undefined>(props: VizbrixViewProps<TData>): 
   const [store] = useState<VizbrixStore<unknown>>(() =>
     createStore(layout as LayoutDoc<unknown>, { mode: 'view' }),
   );
+  // The last document handed to the store, as handed over. Seeded with the
+  // construction document: the store REPAIRS what it adopts (non-canonical `z`
+  // keys), so `getDoc()` is not this object and the mount effect would otherwise
+  // replay the raw prop straight back over the repair.
+  const adoptedRef = useRef<LayoutDoc<unknown> | null>(layout as LayoutDoc<unknown>);
 
+  // Silent, identical to `<Vizbrix>`: a new `children` identity must not
+  // re-render every item. See the note at the top of `context.ts`.
   const renderRef = useRef<AnyItemRenderer>(children as unknown as AnyItemRenderer);
-  const [renderVersion, setRenderVersion] = useState(0);
+  renderRef.current = children as unknown as AnyItemRenderer;
   useEffect(() => {
-    const next = children as unknown as AnyItemRenderer;
-    if (renderRef.current === next) return;
-    renderRef.current = next;
-    setRenderVersion((version) => version + 1);
+    renderRef.current = children as unknown as AnyItemRenderer;
   }, [children]);
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const [canvasEl, setCanvasEl] = useState<HTMLDivElement | null>(null);
+  const [wrapperEl, setWrapperEl] = useState<HTMLDivElement | null>(null);
+  const setCanvas = useCallback((el: HTMLDivElement | null) => {
+    canvasRef.current = el;
+    setCanvasEl(el);
+  }, []);
+  const setWrapper = useCallback((el: HTMLDivElement | null) => {
+    wrapperRef.current = el;
+    setWrapperEl(el);
+  }, []);
   // Always null here: nothing in this entry point can create a controller.
   const controllerRef = useRef<InteractionController | null>(null);
   const announceRef = useRef<AnnounceTargets>(NO_ANNOUNCE);
@@ -94,10 +115,17 @@ export function VizbrixView<TData = undefined>(props: VizbrixViewProps<TData>): 
   const getOrder = useCallback(() => store.getOrder(), [store]);
   const ids = useSyncExternalStore(subscribeOrder, getOrder, getOrder);
 
-  useContainerMeasure(store, scaled ? wrapperRef : canvasRef, canvasRef, size);
+  useContainerMeasure(
+    store,
+    scaled ? wrapperRef : canvasRef,
+    canvasRef,
+    size,
+    scaled ? wrapperEl : canvasEl,
+  );
 
   useEffect(() => {
-    syncIncomingDoc(store, layout as LayoutDoc<unknown>, null);
+    syncIncomingDoc(store, layout as LayoutDoc<unknown>, adoptedRef.current);
+    adoptedRef.current = layout as LayoutDoc<unknown>;
   }, [store, layout]);
 
   const runtime = useMemo<VizbrixRuntime>(
@@ -109,15 +137,15 @@ export function VizbrixView<TData = undefined>(props: VizbrixViewProps<TData>): 
       getLabel,
       controllerRef,
       renderRef,
-      renderVersion,
+      renderKey,
       announceRef,
     }),
-    [store, instanceId, strings, getLabel, renderVersion],
+    [store, instanceId, strings, getLabel, renderKey],
   );
 
   const canvas = (
     <div
-      ref={canvasRef}
+      ref={setCanvas}
       data-vzb={instanceId}
       data-vzb-mode="view"
       className={scaled ? undefined : className}
@@ -133,7 +161,7 @@ export function VizbrixView<TData = undefined>(props: VizbrixViewProps<TData>): 
   return (
     <VizbrixContext.Provider value={runtime}>
       {scaled ? (
-        <div ref={wrapperRef} className={className} style={{ ...style, overflow: 'hidden' }}>
+        <div ref={setWrapper} className={className} style={{ ...style, overflow: 'hidden' }}>
           {canvas}
         </div>
       ) : (

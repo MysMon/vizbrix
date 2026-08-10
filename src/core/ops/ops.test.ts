@@ -536,3 +536,67 @@ describe('property: applyOp(applyOp(doc, op), invertOp(op)) === doc', () => {
     }
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* regressions                                                         */
+/* ------------------------------------------------------------------ */
+
+describe('opaque `data` is never read as a Len', () => {
+  /**
+   * `{px: 12}` and `12` are the same LENGTH, but consumer data is not a
+   * length — a widget whose data happens to have a `px` key must still be able
+   * to change.
+   */
+  const cases: Array<[unknown, unknown]> = [
+    [{ px: 12 }, 12],
+    [12, { px: 12 }],
+    [{ px: 0 }, {}],
+    [{ pct: 5, px: 3 }, { pct: 5 }],
+    [{ nested: { px: 4 } }, { nested: 4 }],
+  ];
+
+  it('commits a setData between Len-shaped payloads', () => {
+    for (const [before, after] of cases) {
+      const doc = docOf(item('a', 'a0', { data: before } as Partial<Item>));
+      const next = applyOp(doc, { type: 'setData', id: 'a', before, after });
+      expect(next).not.toBe(doc);
+      expect((next.items[0] as unknown as { data: unknown }).data).toBe(after);
+    }
+  });
+
+  it('reports the same pair as un-rebasable', () => {
+    for (const [before, after] of cases) {
+      const doc = docOf(item('a', 'a0', { data: before } as Partial<Item>));
+      expect(rebaseOk(doc, { type: 'setData', id: 'a', before, after })).toBe(false);
+      expect(rebaseOk(doc, { type: 'setData', id: 'a', before: after, after: before })).toBe(true);
+    }
+  });
+
+  it('still treats a genuinely equal payload as a no-op', () => {
+    const doc = docOf(item('a', 'a0', { data: { px: 12, list: [1, 2] } } as Partial<Item>));
+    const same = { px: 12, list: [1, 2] };
+    expect(applyOp(doc, { type: 'setData', id: 'a', before: same, after: same })).toBe(doc);
+    expect(rebaseOk(doc, { type: 'setData', id: 'a', before: same, after: same })).toBe(true);
+  });
+
+  it('keeps Len-awareness for placements, which ARE lengths', () => {
+    const doc = docOf(item('a', 'a0', { at: { sm: { x: start({ px: 12 }, 100) } } }));
+    // `{px: 12}` and `12` denote the same offset: re-encoding one as the other
+    // is a no-op, not an edit.
+    const op = {
+      type: 'placeAt',
+      id: 'a',
+      size: 'sm',
+      before: { x: start({ px: 12 }, 100) },
+      after: { x: start(12, 100) },
+    } as Op;
+    expect(applyOp(doc, op)).toBe(doc);
+    expect(rebaseOk(doc, op)).toBe(true);
+  });
+
+  it('does not confuse a Len-shaped `data` with an item field of the same name', () => {
+    const doc = docOf(item('a', 'a0', { data: { px: 1 } } as Partial<Item>));
+    const other = item('a', 'a0', { data: 1 } as Partial<Item>);
+    expect(rebaseOk(doc, { type: 'add', item: asOpItem(other) })).toBe(false);
+  });
+});

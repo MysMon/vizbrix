@@ -166,7 +166,9 @@ Two lower-level tools for when `load()` is the wrong granularity:
   not renderable; warnings mean it will be repaired.
 - `normalize(docLike, issues?): LayoutDoc` — total repair. Accepts *anything* and returns a document
   the engine can consume without defensive checks: base width filled, duplicate ids renamed, missing
-  `z` keys generated, invalid fields dropped, lengths canonicalized, items sorted by `z`. It is
+  or non-canonical `z` keys regenerated order-preservingly, invalid fields dropped, lengths
+  canonicalized, items sorted by `z`. A damaged placement inside an `at.<size>` override is
+  dropped (the base placement cascades through) rather than repaired to a zero-size rect. It is
   idempotent (law L3) and appends every repair to the optional `issues` sink.
 
 `defineLayout()` is the only function in the schema module that throws, and only on duplicate ids —

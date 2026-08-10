@@ -6,8 +6,9 @@ import type {
   LayoutItem,
   LayoutItemBase,
   Op,
+  VizbrixStore,
 } from '../schema/types';
-import { createStore } from './store';
+import { createStore, lastReplaceSourceOf } from './store';
 import { buildServerViews } from './server-view';
 
 /* ------------------------------------------------------------------ */
@@ -929,5 +930,290 @@ describe('lifecycle', () => {
     expect(store.setAnchor('ghost', 'x', 'end').status).toBe('empty');
     expect(store.getItemView('ghost')).toBeUndefined();
     expect(store.getServerItemView('ghost')).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* regressions                                                         */
+/* ------------------------------------------------------------------ */
+
+describe('replaceDoc adopts the incoming document', () => {
+  /** Hand-authored keys the fractional generator cannot use as bounds. */
+  const handAuthored = () =>
+    makeDoc([
+      item('a', 'b0', { x: 10, y: 10, w: 100, h: 50 }),
+      item('b', 'c0', { x: 300, y: 10, w: 100, h: 50 }),
+    ]);
+
+  function replace(store: ReturnType<typeof editStore>, next: LayoutDoc): void {
+    store.apply([{ type: 'replaceDoc', before: store.getDoc(), after: next } as unknown as Op]);
+  }
+
+  it('canonicalizes z keys, so a later reorder cannot throw', () => {
+    const store = editStore();
+    replace(store, handAuthored());
+    expect(store.getDoc().items.map((i) => i.z)).not.toEqual(['b0', 'c0']);
+    expect(() => store.bringToFront('a')).not.toThrow();
+    expect(store.getOrder()).toEqual(['b', 'a']);
+    expect(() => store.sendToBack('a')).not.toThrow();
+    expect(store.getOrder()).toEqual(['a', 'b']);
+    expect(() =>
+      store.addItem(item('c', '', { x: 0, y: 0, w: 10, h: 10 })),
+    ).not.toThrow();
+    expect(store.getOrder()[2]).toBe('c');
+  });
+
+  it('preserves the authored order while re-keying', () => {
+    const store = editStore();
+    replace(store, handAuthored());
+    expect(store.getOrder()).toEqual(['a', 'b']);
+  });
+
+  it('remembers the SOURCE object, which may differ from the installed doc', () => {
+    const store = editStore();
+    expect(store.getLastReplaceSource()).toBeUndefined();
+    const incoming = handAuthored();
+    replace(store, incoming);
+    // The store had to repair it, so identity alone cannot detect the echo.
+    expect(store.getDoc()).not.toBe(incoming);
+    expect(store.getLastReplaceSource()).toBe(incoming);
+  });
+
+  it('is readable through a wrapper that only declares the public store', () => {
+    const store = editStore();
+    const incoming = handAuthored();
+    replace(store, incoming);
+    // The React adapter instruments the store with a spread copy.
+    const wrapped: VizbrixStore<unknown> = { ...store } as VizbrixStore<unknown>;
+    expect(lastReplaceSourceOf(wrapped)).toBe(incoming);
+    expect(lastReplaceSourceOf(null)).toBeUndefined();
+    expect(lastReplaceSourceOf({} as VizbrixStore<unknown>)).toBeUndefined();
+  });
+
+  it('keeps a clean document byte-identical', () => {
+    const store = editStore();
+    const clean = twoItemDoc();
+    replace(store, clean);
+    expect(store.getDoc()).toBe(clean);
+    expect(store.getLastReplaceSource()).toBe(clean);
+  });
+});
+
+describe('reorder tolerates a document with unusable z keys', () => {
+  /** `setZ` accepts any non-empty string, so damage can arrive post-construction. */
+  function corrupt(store: ReturnType<typeof editStore>, id: string, z: string): void {
+    store.apply([{ type: 'setZ', id, before: store.getItem(id)!.z, after: z } as Op]);
+  }
+
+  it('repairs instead of throwing, and still reaches the requested edge', () => {
+    const store = editStore();
+    corrupt(store, 'b', 'b0');
+    expect(() => store.sendToBack('a')).not.toThrow();
+    expect(store.getOrder()).toEqual(['a', 'b']);
+    expect(() => store.bringToFront('a')).not.toThrow();
+    expect(store.getOrder()).toEqual(['b', 'a']);
+  });
+
+  it('does not throw out of addItem either', () => {
+    const store = editStore();
+    corrupt(store, 'b', 'b0');
+    expect(() => store.addItem(item('c', '', { x: 0, y: 0, w: 10, h: 10 }))).not.toThrow();
+    expect(store.getOrder()[2]).toBe('c');
+  });
+});
+
+describe('selection is pruned when items disappear', () => {
+  it('drops removed ids and fires the selection channel', () => {
+    const store = editStore();
+    store.setSelection(['a', 'b']);
+    const onSelection = vi.fn();
+    store.subscribeSelection(onSelection);
+
+    store.removeItem('a');
+
+    expect(store.getSelection()).toEqual(['b']);
+    expect(onSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resurrect a recycled id as selected', () => {
+    const store = editStore();
+    store.setSelection(['a']);
+    const removed = store.getItem('a')!;
+    store.apply([
+      { type: 'remove', item: removed } as Op,
+      { type: 'add', item: item('a', 'a5', { x: 0, y: 0, w: 10, h: 10 }) } as Op,
+    ]);
+    expect(store.getSelection()).toEqual([]);
+    expect(store.getItemView('a')!.selected).toBe(false);
+  });
+
+  it('leaves an untouched selection alone', () => {
+    const store = editStore();
+    store.setSelection(['b']);
+    const onSelection = vi.fn();
+    store.subscribeSelection(onSelection);
+    store.removeItem('a');
+    expect(store.getSelection()).toEqual(['b']);
+    expect(onSelection).not.toHaveBeenCalled();
+  });
+
+  it('restores a selection through undo', () => {
+    const store = editStore();
+    store.setSelection(['a', 'b']);
+    store.removeItem('a');
+    expect(store.getSelection()).toEqual(['b']);
+    store.undo();
+    expect(store.getItem('a')).toBeDefined();
+    expect(store.getSelection()).toEqual(['a']);
+  });
+});
+
+describe('a drop at the origin is a no-op even when re-encoding is lossy', () => {
+  it('keeps a y:"center" anchor under the default height:"auto"', () => {
+    const doc = makeDoc([
+      {
+        id: 'a',
+        z: 'a0',
+        x: { mode: 'start', offset: 10, size: 100 },
+        y: { mode: 'center', offset: 0, size: 50 },
+      } as unknown as LayoutItem,
+    ]);
+    const store = createStore(doc, { mode: 'edit' });
+    const onA = vi.fn();
+    store.subscribeItem('a', onA);
+
+    const rect = store.getItemView('a')!.rect;
+    expect(store.moveItem('a', { ...rect }).status).toBe('empty');
+
+    expect(store.getItem('a')!.y).toEqual({ mode: 'center', offset: 0, size: 50 });
+    expect(store.canUndo()).toBe(false);
+    expect(onA).not.toHaveBeenCalled();
+  });
+
+  it('does not collapse percentage units under height:"fill"', () => {
+    const doc = makeDoc(
+      [
+        {
+          id: 'a',
+          z: 'a0',
+          x: { mode: 'start', offset: 10, size: 100 },
+          y: { mode: 'end', offset: { pct: 5, px: 3 }, size: 50 },
+        } as unknown as LayoutItem,
+      ],
+      { height: 'fill' },
+    );
+    const store = createStore(doc, { mode: 'edit' });
+    store.setContainerSize(1000, 600);
+    const rect = store.getItemView('a')!.rect;
+
+    expect(store.resizeItem('a', { ...rect }).status).toBe('empty');
+    expect(store.getItem('a')!.y).toEqual({ mode: 'end', offset: { pct: 5, px: 3 }, size: 50 });
+  });
+
+  it('still commits a real move', () => {
+    const doc = makeDoc([
+      {
+        id: 'a',
+        z: 'a0',
+        x: { mode: 'start', offset: 10, size: 100 },
+        y: { mode: 'center', offset: 0, size: 50 },
+      } as unknown as LayoutItem,
+    ]);
+    const store = createStore(doc, { mode: 'edit' });
+    const rect = store.getItemView('a')!.rect;
+    expect(store.moveItem('a', { ...rect, y: rect.y + 40 }).status).toBe('applied');
+    expect(store.getItemView('a')!.rect.y).toBe(rect.y + 40);
+  });
+});
+
+describe('setAnchor refuses an unresolvable vertical anchor (§1.6)', () => {
+  it('reports empty, says why, and leaves the document untouched', () => {
+    const store = editStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const before = store.getItem('a')!.y;
+      const result = store.setAnchor('a', 'y', 'center');
+      expect(result.status).toBe('empty');
+      expect(store.getItem('a')!.y).toBe(before);
+      expect(store.canUndo()).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toMatch(/§1\.6|height/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('never rewrites an authored y:"center" back to "start"', () => {
+    const doc = makeDoc([
+      {
+        id: 'a',
+        z: 'a0',
+        x: { mode: 'start', offset: 10, size: 100 },
+        y: { mode: 'center', offset: 0, size: 50 },
+      } as unknown as LayoutItem,
+    ]);
+    const store = createStore(doc, { mode: 'edit' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(store.setAnchor('a', 'y', 'end').status).toBe('empty');
+      expect(store.getItem('a')!.y.mode).toBe('center');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('still applies the same request under height:"fill"', () => {
+    const store = editStore(twoItemDoc({ height: 'fill' }));
+    store.setContainerSize(1000, 600);
+    expect(store.setAnchor('a', 'y', 'center').status).toBe('applied');
+    expect(store.getItem('a')!.y.mode).toBe('center');
+  });
+});
+
+describe('a breakpoint crossing that only folds hidden/order still notifies', () => {
+  const sized = (override: Record<string, unknown>) =>
+    makeDoc([item('a', 'a0', { x: 10, y: 10, w: 100, h: 50 }, { at: { sm: override } })], {
+      // No tier-3 stacking, so the rect is identical either side of the crossing.
+      stackBelow: 0,
+      sizes: { sm: { maxWidth: 500 } },
+    });
+
+  it('bumps the snapshot when only `hidden` flips', () => {
+    const store = createStore(sized({ hidden: true }), { mode: 'edit' });
+    const onA = vi.fn();
+    store.subscribeItem('a', onA);
+    const before = store.getItemView('a');
+
+    store.setContainerSize(400);
+
+    expect(onA).toHaveBeenCalledTimes(1);
+    expect(store.getItemView('a')).not.toBe(before);
+    expect(store.getItemView('a')!.rect).toEqual(before!.rect);
+
+    store.setContainerSize(1000);
+    expect(onA).toHaveBeenCalledTimes(2);
+  });
+
+  it('bumps the snapshot when only `order` changes', () => {
+    const store = createStore(sized({ order: 3 }), { mode: 'edit' });
+    const onA = vi.fn();
+    store.subscribeItem('a', onA);
+    store.setContainerSize(400);
+    expect(onA).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an unaffected item alone across the same crossing', () => {
+    const doc = makeDoc(
+      [
+        item('a', 'a0', { x: 10, y: 10, w: 100, h: 50 }, { at: { sm: { hidden: true } } }),
+        item('b', 'a1', { x: 300, y: 10, w: 100, h: 50 }),
+      ],
+      { stackBelow: 0, sizes: { sm: { maxWidth: 500 } } },
+    );
+    const store = createStore(doc, { mode: 'edit' });
+    const onB = vi.fn();
+    store.subscribeItem('b', onB);
+    store.setContainerSize(400);
+    expect(onB).not.toHaveBeenCalled();
   });
 });

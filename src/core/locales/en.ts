@@ -79,7 +79,7 @@ export const en: VizbrixStrings = {
   },
 
   placingStarted(ctx: ItemStringContext): string {
-    return `Placing ${ctx.label}. Choose a location and press Enter to place it, or press Escape to cancel.`;
+    return `Placing ${ctx.label}. Click or tap a location to place it, press Enter or Space to move it with the arrow keys instead, or press Escape to cancel.`;
   },
 
   placed(ctx: ItemStringContext): string {

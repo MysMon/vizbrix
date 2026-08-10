@@ -43,8 +43,8 @@ import type {
 import { foldItem } from '../geometry/cascade';
 import { canonLen } from '../geometry/len';
 import { reencodeRect } from '../geometry/reencode';
-import { resolveItem } from '../geometry/resolve';
-import { keyBetween } from '../order/fractional';
+import { degradesOnY, resolveItem } from '../geometry/resolve';
+import { isValidKey, keyBetween } from '../order/fractional';
 import { ensureCanonicalZ } from '../schema/normalize';
 import { createZRanker } from '../order/zrank';
 import { createHistory } from '../ops/history';
@@ -144,6 +144,54 @@ function placeAtSize(ops: readonly Op[]): string | undefined {
 }
 
 /**
+ * The store surface plus the internals the React adapter needs.
+ *
+ * `VizbrixStore` is the frozen public contract (schema/types.ts) and does not
+ * grow for adapter plumbing, so the extra accessor is declared here and simply
+ * carried on the returned object — a consumer that only knows `VizbrixStore`
+ * is unaffected.
+ */
+export interface VizbrixStoreInternal<TData = undefined> extends VizbrixStore<TData> {
+  /**
+   * The exact object most recently handed to a `replaceDoc` op, or `undefined`
+   * before the first one.
+   *
+   * The store may install a REPAIRED copy of that document (z canonicalization),
+   * so `getDoc() === thatObject` is not a usable "have I already applied this?"
+   * test. Controlled React mode needs one: without it, a prop the store had to
+   * repair looks like a fresh assertion on every render and is replayed forever.
+   */
+  getLastReplaceSource(): LayoutDoc<TData> | undefined;
+}
+
+/**
+ * Read {@link VizbrixStoreInternal.getLastReplaceSource} off any store-shaped
+ * object, including a wrapper that only declares the public `VizbrixStore`.
+ *
+ * The React adapter wraps the store in a spread copy to instrument
+ * transactions, which carries the accessor at runtime but narrows the type.
+ * This is the supported way to ask the question from there.
+ */
+export function lastReplaceSourceOf(
+  store: VizbrixStore<unknown> | null | undefined,
+): LayoutDoc<unknown> | undefined {
+  const get = (store as { getLastReplaceSource?: () => LayoutDoc<unknown> | undefined } | null)
+    ?.getLastReplaceSource;
+  return typeof get === 'function' ? get.call(store) : undefined;
+}
+
+/**
+ * Dev-mode diagnostic for a call the store deliberately refused. Silent in
+ * production builds and in any environment without a `console`.
+ */
+function devWarn(message: string): void {
+  const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+  if (proc?.env?.NODE_ENV === 'production') return;
+  if (typeof console === 'undefined' || typeof console.warn !== 'function') return;
+  console.warn(`vizbrix: ${message}`);
+}
+
+/**
  * Create a store over a layout document.
  *
  * Construction is side-effect free with respect to globals: nothing is
@@ -157,16 +205,28 @@ function placeAtSize(ops: readonly Op[]): string | undefined {
 export function createStore<TData = undefined>(
   doc: LayoutDoc<TData>,
   opts: StoreOptions = {},
-): VizbrixStore<TData> {
+): VizbrixStoreInternal<TData> {
   /* ---------------- canonical state ---------------- */
 
-  // Defense against hand-authored documents that skipped normalize(): a
-  // non-canonical z key ("b0", "c0", …) would make keyBetween() throw from
-  // inside a later reorder gesture. Order-preserving, no-op on clean docs.
-  const canonical = ensureCanonicalZ(doc?.items ?? []);
-  if (canonical.changed) doc = { ...doc, items: canonical.items as LayoutItem<TData>[] };
+  /**
+   * Defense against documents that skipped normalize(): a non-canonical z key
+   * ("b0", "c0", …) would make keyBetween() throw from inside a later reorder
+   * gesture. Order-preserving, no-op (same reference) on clean docs.
+   *
+   * Applied at BOTH doors a document enters through — construction and
+   * `replaceDoc` — because the controlled React path replays the raw prop
+   * through `replaceDoc` on mount, which would otherwise undo the repair.
+   */
+  function adoptDoc(input: LayoutDoc<TData>): LayoutDoc<TData> {
+    const canonical = ensureCanonicalZ((input?.items ?? []) as ReadonlyArray<{ id: string; z: string }>);
+    if (!canonical.changed) return input;
+    return { ...input, items: canonical.items as unknown as LayoutItem<TData>[] };
+  }
+
+  doc = adoptDoc(doc);
 
   let current: LayoutDoc<TData> = doc;
+  let lastReplaceSource: LayoutDoc<TData> | undefined;
   let mode: 'view' | 'edit' = opts.mode ?? 'view';
   const onConflict = opts.onConflict ?? 'skip';
   const history = createHistory(opts.historyDepth ?? 100);
@@ -189,6 +249,16 @@ export function createStore<TData = undefined>(
   let selectionSet: ReadonlySet<string> = new Set();
   const snapshots = new Map<string, ItemSnapshot<TData>>();
   const versions = new Map<string, number>();
+  /**
+   * Per-item fingerprint of the FOLDED `hidden`/`order` pair.
+   *
+   * Neither is visible in the snapshot's (item, rect, zIndex, selected) tuple —
+   * folding happens below it — so a breakpoint crossing whose override changes
+   * only visibility or stack order would otherwise reuse the snapshot object,
+   * fire no listener, and leave the rendered tree disagreeing with the emitted
+   * `display:none`.
+   */
+  const foldedFlags = new Map<string, string>();
   let keyGrowthReported = 0;
 
   /* ---------------- transient state ---------------- */
@@ -252,19 +322,22 @@ export function createStore<TData = undefined>(
       const rect = rects.get(id) ?? ZERO_RECT;
       const zIndex = zRanks.get(id) ?? 0;
       const selected = selectionSet.has(id);
+      const flags = foldedFlagsOf(item);
       const prev = snapshots.get(id);
       if (
         prev &&
         prev.item === item &&
         prev.zIndex === zIndex &&
         prev.selected === selected &&
-        sameRect(prev.rect, rect)
+        sameRect(prev.rect, rect) &&
+        foldedFlags.get(id) === flags
       ) {
         continue;
       }
       const version = (versions.get(id) ?? 0) + 1;
       versions.set(id, version);
       snapshots.set(id, { item, rect, zIndex, selected, version });
+      foldedFlags.set(id, flags);
       changed.push(id);
     }
 
@@ -272,6 +345,7 @@ export function createStore<TData = undefined>(
       if (nextById.has(id)) continue;
       snapshots.delete(id);
       versions.delete(id);
+      foldedFlags.delete(id);
       changed.push(id);
     }
 
@@ -279,6 +353,13 @@ export function createStore<TData = undefined>(
     if (orderChanged) orderIds = Object.freeze(nextOrder);
     reportKeyGrowth(sorted);
     return { changed, orderChanged };
+  }
+
+  /** Fingerprint of the folded visibility/stack-order pair at the active sizes. */
+  function foldedFlagsOf(item: LayoutItem<TData>): string {
+    const folded = foldItem(item, activeSizes);
+    const order = typeof folded.order === 'number' ? folded.order : '';
+    return `${folded.hidden === true ? '1' : '0'}|${order}`;
   }
 
   function reportKeyGrowth(items: readonly LayoutItemBase[]): void {
@@ -334,6 +415,22 @@ export function createStore<TData = undefined>(
     }
     if (applied.length === 0) return empty(skipped);
 
+    // A document replacement is the load/import boundary — the incoming
+    // document has not been through createStore, so it gets the same z-key
+    // repair here. The SOURCE object is remembered as handed in, because the
+    // installed document may be a repaired copy of it.
+    const replaced = applied.some((op) => op.type === 'replaceDoc');
+    if (replaced) {
+      for (let i = applied.length - 1; i >= 0; i--) {
+        const op = applied[i]!;
+        if (op.type === 'replaceDoc') {
+          lastReplaceSource = op.after as unknown as LayoutDoc<TData>;
+          break;
+        }
+      }
+      next = adoptDoc(next);
+    }
+
     current = next;
     const { changed, orderChanged } = reconcile();
 
@@ -343,6 +440,12 @@ export function createStore<TData = undefined>(
       current = before;
       return empty(skipped);
     }
+
+    // Removed items must not stay selected: a dead id leaking out of
+    // getSelection() breaks every consumer that maps it back to an item, and a
+    // recycled id would be born selected. Pruned after the rollback guard so a
+    // restored document can never be left with a pruned selection.
+    const selectionChanged = pruneSelection(applied, changed);
 
     const tx: Transaction = {
       label: options.label ?? deriveLabel(applied, placeAtSize(applied)),
@@ -355,14 +458,48 @@ export function createStore<TData = undefined>(
     // A document replacement is the load/import boundary: every recorded
     // inverse describes a document that no longer exists, so history is wiped
     // and the replacement itself is not undoable.
-    const replaced = applied.some((op) => op.type === 'replaceDoc');
     if (replaced) history.clear();
     // History is frozen in view mode (§1.16): the doc can still be driven
     // programmatically, but a read-only surface accumulates no undo entries.
     else if (!options.transient && mode === 'edit') history.push(tx);
 
-    notify(changed, { order: orderChanged || touchesOrder(applied), doc: true });
+    notify(changed, {
+      order: orderChanged || touchesOrder(applied),
+      selection: selectionChanged,
+      doc: true,
+    });
     return { status: 'applied', skipped, tx };
+  }
+
+  /**
+   * Drop selected ids that the just-applied ops removed, and report whether the
+   * selection channel must fire.
+   *
+   * An id that a single batch removed and re-added is dropped too: it is a
+   * DIFFERENT item that happens to reuse the name, and inheriting the old
+   * item's selection is never what the caller meant. That case is also the only
+   * one where the freshly built snapshots can disagree with the pruned
+   * selection, so it re-reconciles and merges the extra changed ids.
+   */
+  function pruneSelection(applied: readonly Op[], changed: string[]): boolean {
+    if (selection.length === 0) return false;
+    const removed = new Set<string>();
+    for (const op of applied) {
+      if (op.type === 'remove' && typeof op.item?.id === 'string') removed.add(op.item.id);
+    }
+    const kept = selection.filter((id) => byId.has(id) && !removed.has(id));
+    if (kept.length === selection.length) return false;
+
+    const recycled = selection.some((id) => removed.has(id) && byId.has(id));
+    selection = Object.freeze(kept);
+    selectionSet = new Set(kept);
+    if (recycled) {
+      // The snapshot built moments ago still carries `selected: true` for the
+      // re-added item; rebuild it so the store and its views agree.
+      const again = reconcile();
+      for (const id of again.changed) if (!changed.includes(id)) changed.push(id);
+    }
+    return true;
   }
 
   /**
@@ -408,17 +545,29 @@ export function createStore<TData = undefined>(
     if (item.locked === true) return blocked();
     const config = configOf();
     const folded = foldItem(item, activeSizes);
-    const pair = reencodeRect(
-      rect,
-      config,
-      layoutWidthOf(config, width),
-      height,
-      folded.x?.mode ?? 'start',
-      folded.y?.mode ?? 'start',
-    );
+    const extent = layoutWidthOf(config, width);
+    const xMode: AxisMode = folded.x?.mode ?? 'start';
+    const yMode: AxisMode = folded.y?.mode ?? 'start';
+    const pair = reencodeRect(rect, config, extent, height, xMode, yMode);
     // Dropped where it was picked up: nothing changed, so nothing is committed
     // and no undo entry is created (§8).
+    //
+    // The stored placement is not enough to decide that. Re-encoding is LOSSY
+    // by design — under `height:'auto'` every y mode but `start` degrades
+    // (§1.6), and `scale` becomes percentages — so the re-encoded pair for an
+    // unmoved item routinely differs from what the document holds while
+    // describing the very same rect. Comparing against the re-encoded form of
+    // the item's CURRENT placement asks the only question that matters: did the
+    // geometry move? A drop at the origin therefore records nothing and leaves
+    // the authored anchor mode and units intact.
     if (samePlacement(pair.x, folded.x) && samePlacement(pair.y, folded.y)) return empty();
+    // Deliberately resolved, not the snapshot rect: under tier-3 the snapshot
+    // describes the flex column, and re-encoding that would relocate the item.
+    const currentRect = resolveItem(item, resolveConfigOf(config), extent, height);
+    const currentPair = reencodeRect(currentRect, config, extent, height, xMode, yMode);
+    if (samePlacement(pair.x, currentPair.x) && samePlacement(pair.y, currentPair.y)) {
+      return empty();
+    }
     const { op, size } = placementOp(item, pair, kind);
     return apply([op], { ...options, label: options?.label ?? labelFor(kind, id, size) });
   }
@@ -432,15 +581,59 @@ export function createStore<TData = undefined>(
     return typeof z === 'string' ? z : null;
   }
 
+  /** True when a neighbour key can be handed to the generator as a bound. */
+  function usableBound(z: string | null): boolean {
+    return z === null || isValidKey(z);
+  }
+
+  /**
+   * Re-key every item whose `z` the generator would reject, as a store-originated
+   * transaction.
+   *
+   * `setZ`/`add` let a caller write any string, so an invalid key can still
+   * reach the document after construction. Repairing it here — from a
+   * CANONICALIZED document, rather than fabricating one key on the spot — keeps
+   * the resulting order the one the document expressed; fabricating a bound
+   * would silently send `sendToBack` to the wrong end ('Zz' > '1' in ASCII).
+   * The repair is `transient`, so it never lands in the user's undo stack.
+   */
+  function repairKeys(): void {
+    const items = current?.items ?? [];
+    const canonical = ensureCanonicalZ(items as ReadonlyArray<{ id: string; z: string }>);
+    if (!canonical.changed) return;
+    const ops: Op[] = [];
+    const ids: string[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const before = items[i]!;
+      const after = canonical.items[i]!;
+      if (before.z !== after.z) {
+        ops.push({ type: 'setZ', id: before.id, before: before.z, after: after.z });
+        ids.push(before.id);
+      }
+    }
+    if (ops.length === 0) return;
+    apply(ops, { transient: true, label: { kind: 'reorder', ids } });
+  }
+
   function reorder(id: string, side: 'front' | 'back'): TxResult {
     if (destroyed) return empty();
-    const item = byId.get(id);
-    if (!item) return empty();
-    const others = orderIds.filter((other) => other !== id);
-    if (others.length === 0) return empty();
-    const already = side === 'front' ? orderIds[orderIds.length - 1] === id : orderIds[0] === id;
-    if (already) return empty();
-    const bound = edgeKey(id, side);
+    if (!byId.has(id)) return empty();
+    const atEdge = (): boolean =>
+      side === 'front' ? orderIds[orderIds.length - 1] === id : orderIds[0] === id;
+    if (orderIds.length < 2) return empty();
+    if (atEdge()) return empty();
+
+    let bound = edgeKey(id, side);
+    if (!usableBound(bound)) {
+      repairKeys();
+      if (!byId.has(id) || orderIds.length < 2 || atEdge()) return empty();
+      bound = edgeKey(id, side);
+      // Still unusable: refuse rather than throw out of an onClick, and refuse
+      // rather than guess — a fabricated bound would move the item to the
+      // wrong end.
+      if (!usableBound(bound)) return empty();
+    }
+    const item = byId.get(id)!;
     const z = side === 'front' ? keyBetween(bound, null) : keyBetween(null, bound);
     return apply([{ type: 'setZ', id, before: item.z, after: z }], {
       label: { kind: 'reorder', ids: [id] },
@@ -566,8 +759,9 @@ export function createStore<TData = undefined>(
 
   reconcile();
 
-  const store: VizbrixStore<TData> = {
+  const store: VizbrixStoreInternal<TData> = {
     getDoc: () => current,
+    getLastReplaceSource: () => lastReplaceSource,
     getItem: (id) => byId.get(id),
     getItemView: (id) => snapshots.get(id),
     getServerItemView: (id) => serverViews.get(id),
@@ -654,8 +848,18 @@ export function createStore<TData = undefined>(
       if (destroyed) return empty();
       let next: LayoutItem<TData> = item;
       if (typeof next?.z !== 'string' || next.z.length === 0) {
-        const topId = orderIds[orderIds.length - 1];
-        const topZ = topId ? (byId.get(topId)?.z ?? null) : null;
+        const topOf = (): string | null => {
+          const topId = orderIds[orderIds.length - 1];
+          return topId ? (byId.get(topId)?.z ?? null) : null;
+        };
+        let topZ = topOf();
+        if (!usableBound(topZ)) {
+          // Same defense as `reorder`: repair the document's keys first rather
+          // than feeding an unusable bound to the generator.
+          repairKeys();
+          topZ = topOf();
+          if (!usableBound(topZ)) topZ = null;
+        }
         next = { ...item, z: keyBetween(topZ, null) } as LayoutItem<TData>;
       }
       return apply([{ type: 'add', item: next as unknown as LayoutItem<never> }], {
@@ -680,6 +884,12 @@ export function createStore<TData = undefined>(
     /**
      * Change one axis's anchor mode without moving the item: resolve at the
      * current extent, then re-encode the very same rect under the new mode.
+     *
+     * A vertical anchor other than `start` is refused under `height:'auto'`
+     * (§1.6): the container has no definite height, so the mode cannot be
+     * honored, and re-encoding would degrade it straight back to `start` —
+     * storing a lie. The call reports `empty` (nothing changed) and says why in
+     * development, instead of failing silently.
      */
     setAnchor(id: string, axis: Axis, anchorMode: AxisMode): TxResult {
       if (destroyed) return empty();
@@ -687,6 +897,14 @@ export function createStore<TData = undefined>(
       if (!item) return empty();
       if (item.locked === true) return blocked();
       const config = configOf();
+      if (axis === 'y' && degradesOnY(config, anchorMode)) {
+        devWarn(
+          `setAnchor(${JSON.stringify(id)}, 'y', ${JSON.stringify(anchorMode)}) was ignored: a ` +
+            `vertical anchor other than 'start' needs container.height:'fill' with a base ` +
+            `height (spec §1.6). The document is unchanged.`,
+        );
+        return empty();
+      }
       const extent = layoutWidthOf(config, width);
       // Deliberately NOT the snapshot rect: under tier-3 that rect describes
       // the flex column, and re-encoding it would relocate the item.

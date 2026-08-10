@@ -22,7 +22,8 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { StrictMode } from 'react';
+import { StrictMode, useState } from 'react';
+import type { ReactElement } from 'react';
 import { act, cleanup, render } from '@testing-library/react';
 import type { InteractionState, LayoutDoc, Rect } from '../core/schema/types';
 import { defineLayout } from '../core/schema/normalize';
@@ -146,6 +147,102 @@ describe('render topology during a drag', () => {
 
     // And the commit really did move it.
     expect(store.getItemView(DRAGGED)!.rect.x).toBe(start.x + FRAMES);
+  });
+
+  // The parent re-render is the other half of the claim. Consumers pass an
+  // inline arrow, so `children` is a NEW function on every parent render — and
+  // in controlled mode the parent re-renders after every single commit. If a
+  // fresh callback identity propagated through context, one drag commit would
+  // re-render all 200 items instead of 1, which is exactly the failure mode
+  // react-grid-layout has.
+  it('re-renders no item when the parent re-renders with a new inline callback', () => {
+    const renders = new Map<string, number>();
+    const doc = makeDoc();
+    let bump: (() => void) | null = null;
+
+    function Host(): ReactElement {
+      const [, setTick] = useState(0);
+      bump = () => setTick((tick) => tick + 1);
+      return (
+        <Vizbrix defaultLayout={doc} mode="edit">
+          {(item) => {
+            renders.set(item.id, (renders.get(item.id) ?? 0) + 1);
+            return item.id === 'i0' ? <Probe /> : null;
+          }}
+        </Vizbrix>
+      );
+    }
+
+    render(<Host />);
+    expect(renders.size).toBe(ITEM_COUNT);
+
+    act(() => {
+      bump!();
+    });
+
+    for (const [id, count] of renders) expect(`${id}:${count}`).toBe(`${id}:1`);
+  });
+
+  it('re-renders exactly one item per commit in controlled mode', () => {
+    const renders = new Map<string, number>();
+
+    function Host(): ReactElement {
+      const [doc, setDoc] = useState(makeDoc);
+      return (
+        <Vizbrix
+          layout={doc}
+          mode="edit"
+          onLayoutChange={(next) => {
+            setDoc(next);
+          }}
+        >
+          {(item) => {
+            renders.set(item.id, (renders.get(item.id) ?? 0) + 1);
+            return item.id === 'i0' ? <Probe /> : null;
+          }}
+        </Vizbrix>
+      );
+    }
+
+    render(<Host />);
+    const store = captured!.store;
+    const start = store.getItemView(DRAGGED)!.rect;
+
+    act(() => {
+      store.moveItem(DRAGGED, { ...start, x: start.x + 25 });
+    });
+
+    // One commit: the parent re-rendered (twice — the echo and the commit tick),
+    // the store's item channel fired for one item, and that is the whole cost.
+    expect(renders.get(DRAGGED)).toBe(2);
+    for (const [id, count] of renders) {
+      if (id === DRAGGED) continue;
+      expect(`${id}:${count}`).toBe(`${id}:1`);
+    }
+  });
+
+  it('renderKey re-renders every item exactly once', () => {
+    const renders = new Map<string, number>();
+    const doc = makeDoc();
+    const { rerender } = render(
+      <Vizbrix defaultLayout={doc} mode="edit" renderKey={1}>
+        {(item) => {
+          renders.set(item.id, (renders.get(item.id) ?? 0) + 1);
+          return item.id === 'i0' ? <Probe /> : null;
+        }}
+      </Vizbrix>,
+    );
+
+    rerender(
+      <Vizbrix defaultLayout={doc} mode="edit" renderKey={2}>
+        {(item) => {
+          renders.set(item.id, (renders.get(item.id) ?? 0) + 1);
+          return item.id === 'i0' ? <Probe /> : null;
+        }}
+      </Vizbrix>,
+    );
+
+    for (const [id, count] of renders) expect(`${id}:${count}`).toBe(`${id}:2`);
   });
 
   it('re-renders only the item whose snapshot changed on a container resize', () => {
