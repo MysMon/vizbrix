@@ -46,7 +46,6 @@ import type {
   Op,
   Rect,
   SnapConfig,
-  SnapEngine,
   Transaction,
   TxResult,
   TxSource,
@@ -57,6 +56,7 @@ import { foldItem } from '../geometry/cascade';
 import { reencodeRect } from '../geometry/reencode';
 import { yExtentOf } from '../geometry/resolve';
 import { layoutWidthOf } from '../store/server-view';
+import type { GestureSnapEngine } from '../snap/engine';
 import { createSnapEngine } from '../snap/engine';
 import type { AnnounceKind, InteractRuntime, Modifiers, ResolvedOptions } from './machine';
 import { collisionValid, createMachine } from './machine';
@@ -173,7 +173,9 @@ export function createInteractionController<TData = undefined>(
   const machine = createMachine();
 
   let container: HTMLElement | null = null;
-  let engine: SnapEngine | null = null;
+  let engine: GestureSnapEngine | null = null;
+  /** A snap change landed mid-gesture; the engine is rebuilt once it ends. */
+  let engineStale = false;
   let box: Rect = ZERO_RECT;
   let scale = 1;
 
@@ -408,6 +410,13 @@ export function createInteractionController<TData = undefined>(
     ownerDocument: () => container?.ownerDocument ?? null,
     isEdit: () => store.getMode() === 'edit',
     engine() {
+      // A deferred snap change is applied here, at the first call with no live
+      // session — the next gesture's start — so the session that was in flight
+      // when it landed kept its candidate arrays to the end.
+      if (engineStale && machine.session() === null) {
+        engineStale = false;
+        engine = null;
+      }
       if (!engine) engine = createSnapEngine(options.snap);
       return engine;
     },
@@ -487,8 +496,17 @@ export function createInteractionController<TData = undefined>(
       raw = { ...raw, ...next };
       options = resolveOptions(raw);
       // A snap config change takes effect on the NEXT gesture: swapping the
-      // engine mid-drag would drop the candidate arrays it collected.
-      if (Object.prototype.hasOwnProperty.call(next, 'snap') && !machine.busy()) engine = null;
+      // engine mid-drag would drop the candidate arrays it collected, so a
+      // change landing while a gesture is in flight is deferred — `engine()`
+      // rebuilds once the gesture is over — rather than dropped.
+      if (Object.prototype.hasOwnProperty.call(next, 'snap')) {
+        if (machine.busy()) {
+          engineStale = true;
+        } else {
+          engineStale = false;
+          engine = null;
+        }
+      }
     },
     destroy() {
       pointer.cancel();
@@ -498,6 +516,7 @@ export function createInteractionController<TData = undefined>(
       detachers.clear();
       engine?.end();
       engine = null;
+      engineStale = false;
       container = null;
     },
   };

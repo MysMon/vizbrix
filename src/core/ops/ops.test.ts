@@ -322,6 +322,60 @@ describe('rebaseOk', () => {
     expect(rebaseOk(applied, op)).toBe(true);
     expect(rebaseOk(applied, invertOp(op))).toBe(false);
   });
+
+  it('detects a replaceDoc echo through arbitrarily deep consumer data', () => {
+    // Controlled-mode echo detection rides on this arm. A cloning parent
+    // (JSON round-trip, immutable state) must read as "already there" no
+    // matter how deep its `data` payloads nest — a chart spec easily exceeds
+    // a dozen levels.
+    let deep: Record<string, unknown> = { leaf: 1 };
+    for (let i = 0; i < 30; i++) deep = { nested: deep };
+    const withData = applyOp(doc, {
+      type: 'setData',
+      id: 'a',
+      before: undefined,
+      after: deep,
+    } as unknown as Op) as unknown as LayoutDoc<never>;
+    const clone = JSON.parse(JSON.stringify(withData)) as LayoutDoc<never>;
+    expect(rebaseOk(withData, { type: 'replaceDoc', before: withData, after: clone })).toBe(true);
+
+    const differs = JSON.parse(JSON.stringify(withData)) as LayoutDoc<never>;
+    let cursor = (differs.items[0] as { data?: Record<string, unknown> }).data!;
+    for (let i = 0; i < 29; i++) cursor = cursor.nested as Record<string, unknown>;
+    cursor.leaf = 2;
+    expect(rebaseOk(withData, { type: 'replaceDoc', before: withData, after: differs })).toBe(false);
+  });
+
+  it('treats an undefined-valued key as absent, matching a JSON round trip', () => {
+    const withData = applyOp(doc, {
+      type: 'setData',
+      id: 'a',
+      before: undefined,
+      after: { kept: 1, dropped: undefined },
+    } as unknown as Op) as unknown as LayoutDoc<never>;
+    const roundTripped = JSON.parse(JSON.stringify(withData)) as LayoutDoc<never>;
+    expect(rebaseOk(withData, { type: 'replaceDoc', before: withData, after: roundTripped })).toBe(true);
+  });
+
+  it('compares cyclic consumer data as unequal instead of recursing forever', () => {
+    const cyc: Record<string, unknown> = {};
+    cyc.self = cyc;
+    const withData = applyOp(doc, {
+      type: 'setData',
+      id: 'a',
+      before: undefined,
+      after: cyc,
+    } as unknown as Op) as unknown as LayoutDoc<never>;
+    const other: Record<string, unknown> = {};
+    other.self = other;
+    const replacement = {
+      ...withData,
+      items: withData.items.map((it) => ({ ...it, data: other })),
+    } as unknown as LayoutDoc<never>;
+    expect(
+      rebaseOk(withData, { type: 'replaceDoc', before: withData, after: replacement }),
+    ).toBe(false);
+  });
 });
 
 /* ------------------------------------------------------------------ */

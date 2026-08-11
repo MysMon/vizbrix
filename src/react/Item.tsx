@@ -23,13 +23,13 @@ import type { CSSProperties, HTMLAttributes, ReactElement } from 'react';
 import type {
   HandleId,
   InteractionState,
-  ItemStringContext,
   LayoutItem,
 } from '../core/schema/types';
 import type { ItemUI, ItemView } from './context';
 import {
   applyTransientAttrs,
   instructionsId,
+  moveButtonLabelFor,
   transientOf,
   useIsomorphicLayoutEffect,
   useVizbrixContext,
@@ -103,7 +103,7 @@ function ItemImpl({ id }: ItemProps): ReactElement | null {
     instanceId,
     mode,
     strings,
-    getLabel,
+    getLabelRef,
     renderRef,
     controllerRef,
   } = useVizbrixContext();
@@ -171,19 +171,14 @@ function ItemImpl({ id }: ItemProps): ReactElement | null {
 
   let moveButtonProps = INERT_MOVE_BUTTON as ItemUI['moveButtonProps'];
   if (editing && !locked) {
-    const order = store.getOrder();
-    const ctx: ItemStringContext = {
-      label: getLabel(item),
-      x: Math.round(snap.rect.x),
-      y: Math.round(snap.rect.y),
-      w: Math.round(snap.rect.w),
-      h: Math.round(snap.rect.h),
-      position: order.indexOf(id) + 1,
-      count: order.length,
-    };
+    // `aria-label` and `aria-pressed` are also written imperatively by the
+    // overlay: position/count change when a SIBLING changes, and the placing
+    // state changes without this item re-rendering. `data-vzb-move` is how
+    // the overlay finds the button (and a styling hook for consumers).
     moveButtonProps = {
       type: 'button',
-      'aria-label': strings.moveButtonLabel(ctx),
+      'data-vzb-move': '',
+      'aria-label': moveButtonLabelFor(store, strings, getLabelRef.current, id) ?? undefined,
       'aria-pressed': placing,
       onClick: () => {
         const controller = controllerRef.current;
@@ -191,7 +186,7 @@ function ItemImpl({ id }: ItemProps): ReactElement | null {
         if (isPlacingId(store.getInteraction(), id)) controller.cancelPlace();
         else controller.beginPlace(id);
       },
-    };
+    } as ItemUI['moveButtonProps'];
   }
 
   const ui: ItemUI = {

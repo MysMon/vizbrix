@@ -157,6 +157,66 @@ describe('load() version dispatch', () => {
     expect(outcome.doc.version).toBe(2);
   });
 
+  it('lists every path it did not understand, at every level it drops one', () => {
+    const outcome = load({
+      version: 2,
+      compat: 1,
+      container: {
+        base: { width: 1200, depth: 3 },
+        sizes: { md: { maxWidth: 900, minWidth: 400 } },
+        grid: 8,
+      },
+      items: [
+        {
+          id: 'a',
+          x: { mode: 'start', offset: 10, size: 100, skew: 2 },
+          y: { mode: 'start', offset: { px: 0, deg: 90 }, size: 80 },
+          z: 'a0',
+          at: { md: { hidden: true, glow: 1 } },
+          future: 'kept',
+        },
+      ],
+    });
+    expect(outcome.status).toBe('forward-degraded');
+    if (outcome.status !== 'forward-degraded') return;
+    // Every key below is gone from the re-serialized bytes, so the caller that
+    // gates a write-back on `ignored` has to be told about all of them.
+    expect([...outcome.ignored].sort()).toEqual([
+      'container.base.depth',
+      'container.grid',
+      'container.sizes.md.minWidth',
+      'items[0].at.md.glow',
+      'items[0].future',
+      'items[0].x.skew',
+      'items[0].y.offset.deg',
+    ]);
+    const written = serialize(outcome.doc);
+    for (const key of ['depth', 'grid', 'minWidth', 'glow', 'skew', 'deg']) {
+      expect(written).not.toContain(key);
+    }
+  });
+
+  it('lists an axis mode only a newer reader knows', () => {
+    const outcome = load(
+      v1({
+        version: 2,
+        compat: 1,
+        items: [
+          {
+            id: 'a',
+            x: { mode: 'start', offset: 0, size: 1 },
+            y: { mode: 'start', offset: 0, size: 1 },
+            z: 'a0',
+            at: { md: { x: { mode: 'orbital', offset: 0, size: 1 } } },
+          },
+        ],
+      }),
+    );
+    expect(outcome.status).toBe('forward-degraded');
+    if (outcome.status !== 'forward-degraded') return;
+    expect(outcome.ignored).toContain('items[0].at.md.x');
+  });
+
   it('refuses a future document whose compat floor exceeds this reader', () => {
     const outcome = load(v1({ version: 9, compat: 4 }));
     expect(outcome.status).toBe('incompatible');
@@ -254,6 +314,22 @@ describe('load() repairs', () => {
     expect(outcome.issues.every((i) => i.severity === 'warn')).toBe(true);
   });
 
+  it('confines a duplicate-id rename to the duplicated items', () => {
+    const outcome = load(
+      v1({
+        items: [
+          { id: 'a', x: { mode: 'start', offset: 0, size: 1 }, y: { mode: 'start', offset: 0, size: 1 }, z: 'a0' },
+          { id: 'a', x: { mode: 'start', offset: 0, size: 2 }, y: { mode: 'start', offset: 0, size: 1 }, z: 'a1' },
+          { id: 'a-2', x: { mode: 'start', offset: 0, size: 3 }, y: { mode: 'start', offset: 0, size: 1 }, z: 'a2' },
+        ],
+      }),
+    );
+    expect(outcome.status).toBe('ok');
+    // The third item owns "a-2" legitimately: the repair steps over it instead
+    // of taking the id and renaming its owner in turn.
+    expect(docOf(outcome).items.map((i) => i.id)).toEqual(['a', 'a-3', 'a-2']);
+  });
+
   it('drops invalid optional fields with a warning apiece', () => {
     const outcome = load(
       v1({
@@ -334,6 +410,65 @@ describe('load() repairs', () => {
     expect(docOf(outcome).items[0]!.at).toEqual({ md: { hidden: true } });
     if (outcome.status !== 'ok') return;
     expect(outcome.issues.find((i) => i.path === 'items[0].at.md.z')?.message).toContain('forbidden');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* damage inside an `at` override costs the override, not the document */
+/* ------------------------------------------------------------------ */
+
+describe('load() with a damaged size override', () => {
+  const withOverride = (override: unknown, extra: Record<string, unknown> = {}) =>
+    v1({
+      ...extra,
+      items: [
+        {
+          id: 'a',
+          x: { mode: 'start', offset: 10, size: 100 },
+          y: { mode: 'start', offset: 0, size: 80 },
+          z: 'a0',
+          at: { md: override },
+        },
+      ],
+    });
+
+  const damaged: [string, unknown][] = [
+    ['a missing size term', { x: { mode: 'start', offset: 10 } }],
+    ['an unknown axis mode', { x: { mode: 'nope', offset: 1, size: 1 } }],
+    ['a placement that is not an object', { x: 'left' }],
+    ['a non-Len offset', { y: { mode: 'start', offset: 'ten', size: 1 } }],
+    ['a missing both-mode end', { x: { mode: 'both', start: 0 } }],
+  ];
+
+  for (const [name, override] of damaged) {
+    it(`loads ok with ${name}, dropping the override`, () => {
+      const outcome = load(withOverride(override));
+      expect(outcome.status).toBe('ok');
+      const item = docOf(outcome).items[0]!;
+      // The base placement cascades through, exactly as if the override had
+      // never been written.
+      expect(item.x).toEqual({ mode: 'start', offset: 10, size: 100 });
+      expect(item.at).toEqual({ md: {} });
+      if (outcome.status !== 'ok') return;
+      expect(outcome.issues.every((i) => i.severity === 'warn')).toBe(true);
+      expect(paths(outcome.issues).some((p) => p.startsWith('items[0].at.md'))).toBe(true);
+    });
+  }
+
+  it('still fails the document when the same damage is on the base placement', () => {
+    const outcome = load(
+      v1({ items: [{ id: 'a', x: { mode: 'start', offset: 10 }, y: { mode: 'start', offset: 0, size: 1 }, z: 'a0' }] }),
+    );
+    expect(outcome.status).toBe('invalid');
+    if (outcome.status !== 'invalid') return;
+    expect(paths(outcome.errors)).toContain('items[0].x.size');
+  });
+
+  it('degrades a future document whose new axis mode appears only in an override', () => {
+    const outcome = load(
+      withOverride({ x: { mode: 'orbital', offset: 0, size: 1 } }, { version: 2, compat: 1 }),
+    );
+    expect(outcome.status).toBe('forward-degraded');
   });
 });
 

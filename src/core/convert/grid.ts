@@ -1,9 +1,9 @@
 /**
- * react-grid-layout → vizbrix import.
+ * Column-grid → vizbrix import.
  *
- * RGL stores grid cells; vizbrix stores expressions. The conversion is
- * therefore a *lossy widening*: cells are resolved to pixels at a chosen
- * container width using RGL's own `calcGridItemPosition` arithmetic, then
+ * The column grid stores grid cells; vizbrix stores expressions. The
+ * conversion is therefore a *lossy widening*: cells are resolved to pixels at
+ * a chosen container width using the standard column-grid arithmetic, then
  * re-encoded as affine placements whose anchor is INFERRED from the cell's
  * relationship to the grid (spec §12):
  *
@@ -14,12 +14,12 @@
  * | `w / cols >= 0.5`            | `scale` (a major column) |
  * | otherwise                    | `start` (px) |
  *
- * The y axis is always `start`: RGL grids scroll, so the container height is
- * indefinite and vertical anchors are unresolvable (spec §1.6).
+ * The y axis is always `start`: column grids scroll, so the container height
+ * is indefinite and vertical anchors are unresolvable (spec §1.6).
  *
- * Collision policy is NEVER inferred. RGL's `static` flag and its compaction
- * are layout *algorithms*, not intent — `static: true` maps to `locked: true`
- * and nothing maps to `collision: 'forbid'`.
+ * Collision policy is NEVER inferred. The grid's `static` flag and its
+ * compaction are layout *algorithms*, not intent — `static: true` maps to
+ * `locked: true` and nothing maps to `collision: 'forbid'`.
  */
 
 import type {
@@ -34,9 +34,9 @@ import { SCHEMA_VERSION } from '../schema/types';
 import { reencodeAxis } from '../geometry/reencode';
 import { load } from '../schema/load';
 
-/** A single react-grid-layout cell. Extra keys are ignored, not an error. */
-export interface RGLLayoutItem {
-  /** RGL's id field. `id` is accepted as an alias. */
+/** A single column-grid cell (`{ i, x, y, w, h }` in cell units). Extra keys are ignored, not an error. */
+export interface GridCell {
+  /** The cell's id field. `id` is accepted as an alias. */
   i?: string;
   id?: string;
   x: number;
@@ -52,35 +52,35 @@ export interface RGLLayoutItem {
   isResizable?: boolean;
 }
 
-/** `{ lg: [...], md: [...] }` — RGL's ResponsiveGridLayout `layouts` prop. */
-export type RGLResponsiveLayouts = Record<string, RGLLayoutItem[]>;
+/** `{ lg: [...], md: [...] }` — a responsive `layouts` map keyed by breakpoint name. */
+export type GridResponsiveLayouts = Record<string, GridCell[]>;
 
-export interface RGLImportOptions {
+export interface GridImportOptions {
   /**
    * Grid columns. A number applies to every breakpoint; the record form
-   * mirrors RGL's per-breakpoint `cols` prop.
+   * mirrors a per-breakpoint `cols` prop.
    */
   cols: number | Record<string, number>;
-  /** Row height in px (RGL's `rowHeight`). */
+  /** Row height in px. */
   rowHeight: number;
-  /** `[horizontal, vertical]` gap in px. Default `[10, 10]`, as in RGL. */
+  /** `[horizontal, vertical]` gap in px. Default `[10, 10]`. */
   margin?: [number, number];
   /**
    * Width the single-layout form is resolved at, and the base design width of
-   * the produced document. Default: RGL's `lg` breakpoint (1200).
+   * the produced document. Default: the `lg` breakpoint (1200).
    */
   containerWidth?: number;
   /**
-   * RGL `breakpoints` (min-width thresholds). Only used for the responsive
-   * form. Default: RGL's own defaults.
+   * `breakpoints` (min-width thresholds). Only used for the responsive form.
+   * Default: the standard breakpoint set below.
    */
   breakpoints?: Record<string, number>;
-  /** Container padding in px. RGL defaults it to `margin`. */
+  /** Container padding in px. Defaults to `margin`. */
   containerPadding?: [number, number];
 }
 
-/** RGL's default `breakpoints` prop. */
-export const RGL_DEFAULT_BREAKPOINTS: Record<string, number> = {
+/** The default `breakpoints` set. */
+export const GRID_DEFAULT_BREAKPOINTS: Record<string, number> = {
   lg: 1200,
   md: 996,
   sm: 768,
@@ -88,8 +88,8 @@ export const RGL_DEFAULT_BREAKPOINTS: Record<string, number> = {
   xxs: 0,
 };
 
-/** RGL's default `cols` prop. */
-export const RGL_DEFAULT_COLS: Record<string, number> = {
+/** The default `cols` set. */
+export const GRID_DEFAULT_COLS: Record<string, number> = {
   lg: 12,
   md: 10,
   sm: 6,
@@ -100,17 +100,17 @@ export const RGL_DEFAULT_COLS: Record<string, number> = {
 const DEFAULT_MARGIN: [number, number] = [10, 10];
 
 /**
- * Converts an RGL layout (or a responsive `layouts` object) into a loaded
- * vizbrix document. Never throws — malformed input comes back as
+ * Converts a column-grid layout (or a responsive `layouts` object) into a
+ * loaded vizbrix document. Never throws — malformed input comes back as
  * `{ status: 'invalid' }` like any other `load()` failure.
  *
  * ### Breakpoint mapping
  *
- * RGL breakpoints are MIN-widths and desktop-last; vizbrix sizes are
- * MAX-widths and desktop-first. The largest RGL breakpoint becomes the
- * document BASE (no size entry); every smaller breakpoint `k` becomes a
- * declared size whose `maxWidth` is the min-width of the next LARGER
- * breakpoint. With RGL's defaults that is:
+ * Column-grid breakpoints are MIN-widths and desktop-last; vizbrix sizes are
+ * MAX-widths and desktop-first. The largest breakpoint becomes the document
+ * BASE (no size entry); every smaller breakpoint `k` becomes a declared size
+ * whose `maxWidth` is the min-width of the next LARGER breakpoint. With the
+ * default breakpoints that is:
  *
  * ```
  * lg (min 1200) → base
@@ -120,16 +120,17 @@ const DEFAULT_MARGIN: [number, number] = [10, 10];
  * xxs(min    0) → sizes.xxs = { maxWidth: 480 }
  * ```
  *
- * The two selection rules then agree exactly: at width W, RGL picks the
- * largest breakpoint with `W > minWidth`, and vizbrix's descending max-width
- * cascade lands on the same name. Each size's cells are resolved at that
- * size's `maxWidth`, i.e. the widest container the override is active in.
+ * The two selection rules then agree exactly: at width W, the column grid
+ * picks the largest breakpoint with `W > minWidth`, and vizbrix's descending
+ * max-width cascade lands on the same name. Each size's cells are resolved at
+ * that size's `maxWidth`, i.e. the widest container the override is active
+ * in.
  *
  * Overrides identical to the base placement are omitted.
  */
-export function importFromRGL(
-  layouts: RGLLayoutItem[] | RGLResponsiveLayouts,
-  opts: RGLImportOptions,
+export function importFromGrid(
+  layouts: GridCell[] | GridResponsiveLayouts,
+  opts: GridImportOptions,
 ): LoadOutcome<undefined> {
   try {
     const issues: Issue[] = [];
@@ -143,7 +144,7 @@ export function importFromRGL(
     if (Array.isArray(layouts)) {
       const width = finite(opts.containerWidth) && opts.containerWidth > 0
         ? opts.containerWidth
-        : RGL_DEFAULT_BREAKPOINTS.lg!;
+        : GRID_DEFAULT_BREAKPOINTS.lg!;
       const cols = colsFor(opts.cols, 'lg', issues);
       const doc = buildDoc(
         convertLayout(layouts, { cols, rowHeight, margin, padding, width }, 'layouts', issues),
@@ -157,7 +158,7 @@ export function importFromRGL(
     if (layouts === null || typeof layouts !== 'object') {
       return {
         status: 'invalid',
-        errors: [err('', 'expected an RGL layout array or a { breakpoint: layout[] } object')],
+        errors: [err('', 'expected a column-grid layout array or a { breakpoint: layout[] } object')],
       };
     }
 
@@ -165,7 +166,7 @@ export function importFromRGL(
   } catch (e) {
     return {
       status: 'invalid',
-      errors: [err('', `RGL import failed: ${e instanceof Error ? e.message : String(e)}`)],
+      errors: [err('', `grid import failed: ${e instanceof Error ? e.message : String(e)}`)],
     };
   }
 }
@@ -181,12 +182,12 @@ interface Geometry {
 }
 
 function importResponsive(
-  layouts: RGLResponsiveLayouts,
-  opts: RGLImportOptions,
+  layouts: GridResponsiveLayouts,
+  opts: GridImportOptions,
   geo: Geometry,
   issues: Issue[],
 ): LoadOutcome<undefined> {
-  const breakpoints = opts.breakpoints ?? RGL_DEFAULT_BREAKPOINTS;
+  const breakpoints = opts.breakpoints ?? GRID_DEFAULT_BREAKPOINTS;
   const names = Object.keys(layouts).filter((name) => Array.isArray(layouts[name]));
   if (names.length === 0) {
     return { status: 'invalid', errors: [err('', 'no breakpoint held a layout array')] };
@@ -203,7 +204,7 @@ function importResponsive(
     }
   }
 
-  // Descending by RGL min-width: largest first, which becomes the base.
+  // Descending by min-width: largest first, which becomes the base.
   const ordered = [...names].sort(
     (a, b) => (breakpoints[b] ?? 0) - (breakpoints[a] ?? 0) || (a < b ? -1 : a > b ? 1 : 0),
   );
@@ -212,7 +213,7 @@ function importResponsive(
   const baseWidth =
     finite(opts.containerWidth) && opts.containerWidth > 0
       ? opts.containerWidth
-      : Math.max(1, breakpoints[baseName] ?? RGL_DEFAULT_BREAKPOINTS.lg!);
+      : Math.max(1, breakpoints[baseName] ?? GRID_DEFAULT_BREAKPOINTS.lg!);
 
   const baseItems = convertLayout(
     layouts[baseName]!,
@@ -287,7 +288,7 @@ interface ConvertedItem {
   id: string;
   x: AxisPlacement;
   y: AxisPlacement;
-  /** Reading order key material: RGL's visual order is (row, column). */
+  /** Reading order key material: the grid's visual order is (row, column). */
   row: number;
   col: number;
   minW?: number;
@@ -307,7 +308,7 @@ interface GridSpec {
 }
 
 function convertLayout(
-  layout: readonly RGLLayoutItem[],
+  layout: readonly GridCell[],
   grid: GridSpec,
   label: string,
   issues: Issue[],
@@ -322,10 +323,10 @@ function convertLayout(
       issues.push(warn(path, 'not a grid item object; skipped'));
       continue;
     }
-    const c = cell as RGLLayoutItem;
+    const c = cell as GridCell;
     let id = typeof c.i === 'string' && c.i !== '' ? c.i : typeof c.id === 'string' ? c.id : '';
     if (id === '') {
-      id = `rgl-${i}`;
+      id = `cell-${i}`;
       issues.push(warn(`${path}.i`, `missing grid item key; generated "${id}"`));
     }
     if (seen.has(id)) {
@@ -363,7 +364,7 @@ function convertLayout(
     const maxH = spanToPx(c.maxH, grid, false);
     if (maxH !== undefined) item.maxH = maxH;
 
-    // `static` is an RGL layout-algorithm flag; the closest honest mapping is
+    // `static` is a layout-algorithm flag; the closest honest mapping is
     // "the user cannot move it". Collision policy stays at the default.
     if (c.static === true || c.isDraggable === false) item.locked = true;
 
@@ -385,7 +386,7 @@ export function inferAnchor(x: number, w: number, cols: number): AxisMode {
   return 'start';
 }
 
-/* RGL's calcGridItemPosition arithmetic (react-grid-layout/lib/calculateUtils). */
+/* The standard column-grid arithmetic (colWidth = (W − margin·(cols−1) − padding·2) / cols). */
 
 function colWidth(grid: GridSpec): number {
   const [mx] = grid.margin;
@@ -422,8 +423,8 @@ function buildDoc(
   sizes: Record<string, SizeDef>,
   issues: Issue[],
 ): Record<string, unknown> {
-  // RGL has no z: derive a deterministic stacking/reading order from the
-  // visual order of the grid (row, then column, then key).
+  // A column grid has no z: derive a deterministic stacking/reading order
+  // from the visual order of the grid (row, then column, then key).
   const sorted = [...items].sort(
     (a, b) => a.row - b.row || a.col - b.col || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
@@ -431,7 +432,7 @@ function buildDoc(
 
   const container: Record<string, unknown> = {
     base: { width: baseWidth },
-    // RGL grids grow downward inside a scrolling page.
+    // Column grids grow downward inside a scrolling page.
     height: 'auto',
   };
   if (Object.keys(sizes).length > 0) container.sizes = sizes;
@@ -477,13 +478,13 @@ function colsFor(
   if (cols !== null && typeof cols === 'object') {
     const v = cols[name];
     if (finite(v) && v > 0) return Math.floor(v);
-    const fallback = RGL_DEFAULT_COLS[name];
+    const fallback = GRID_DEFAULT_COLS[name];
     if (fallback !== undefined) {
-      issues.push(warn(name, `no column count given; used RGL's default of ${fallback}`));
+      issues.push(warn(name, `no column count given; used the default of ${fallback}`));
       return fallback;
     }
   }
-  issues.push(warn(name, "cols must be a positive number; used RGL's default of 12"));
+  issues.push(warn(name, 'cols must be a positive number; used the default of 12'));
   return 12;
 }
 

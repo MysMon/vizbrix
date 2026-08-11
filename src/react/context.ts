@@ -123,7 +123,14 @@ export interface VizbrixRuntime {
   instanceId: string;
   mode: 'view' | 'edit';
   strings: VizbrixStrings;
-  getLabel: (item: LayoutItemBase) => string;
+  /**
+   * Ref-backed like {@link VizbrixRuntime.renderRef}, and for the same reason:
+   * `getLabel` naturally closes over app state, so consumers pass an inline
+   * arrow whose identity changes every parent render. Items read the current
+   * function when they render; `renderKey` is the escape hatch when new label
+   * text must be adopted by items that have no reason of their own to render.
+   */
+  getLabelRef: Box<(item: LayoutItemBase) => string>;
   /** Null in view mode and until the attach effect has run. */
   controllerRef: Box<InteractionController | null>;
   /**
@@ -182,7 +189,7 @@ export const useIsomorphicLayoutEffect =
  *   whole dashboard into tier-3 stacking because a panel is hidden is a bug the
  *   user sees the moment they open the panel again.
  * - `forcedSize` (the `size` prop) pins the measured width to that named size's
- *   `maxWidth`, which is how Storybook/tests render a breakpoint on a desktop.
+ *   `maxWidth`, which is how tests and previews render a breakpoint on a desktop.
  *
  * `node` is the same element `measureRef` points at, mirrored into state by the
  * caller. It is a DEPENDENCY, not a second source of truth: without it the
@@ -230,12 +237,25 @@ export function useContainerMeasure(
     };
 
     measure();
-    if (typeof ResizeObserver === 'undefined') return;
+    // A commit can change the container CONFIG — `base.width` under scale, a
+    // pinned size's `maxWidth` — without any resize event ever firing. The
+    // scale factor and the forced width are derived from that config, so they
+    // are recomputed whenever the container object's identity changes (item
+    // commits preserve it; only config edits replace it).
+    let lastConfig = store.getDoc().container;
+    const unsubscribe = store.subscribeDoc(() => {
+      const config = store.getDoc().container;
+      if (config === lastConfig) return;
+      lastConfig = config;
+      measure();
+    });
+    if (typeof ResizeObserver === 'undefined') return unsubscribe;
     const observer = new ResizeObserver((entries) => {
       measure(entries[entries.length - 1]);
     });
     observer.observe(el);
     return () => {
+      unsubscribe();
       observer.disconnect();
     };
   }, [store, measureRef, canvasRef, forcedSize, node]);
@@ -270,27 +290,25 @@ function contentHeightOf(el: HTMLElement, entry?: ResizeObserverEntry): number {
  * Reconcile an incoming document prop into the store.
  *
  * Returns true when a replacement was applied. Detecting an ECHO — the parent
- * handing back what the store already holds — is the whole contract, because a
- * `replaceDoc` clears undo/redo (it is the load/import boundary). Two ways a
- * document can be an echo, in increasing cost:
+ * handing back what the store already holds — keeps a routine controlled
+ * round-trip from re-keying, re-rendering and re-adopting a document that did
+ * not change. Two ways a document can be an echo, in increasing cost:
  *
  * 1. It IS the store's current document, or the document the caller last saw
  *    the store adopt — which on mount is the document the store was CONSTRUCTED
  *    with. That seed matters: the store repairs a document as it adopts it
  *    (non-canonical `z` keys — store.ts `adoptDoc`), so a hand-authored prop is
- *    never `=== getDoc()` afterwards, and replaying it would clear history and
- *    re-key the whole document on the very first effect.
+ *    never `=== getDoc()` afterwards, and replaying it would re-key the whole
+ *    document on the very first effect.
  * 2. It is structurally equal to what the store holds. A parent is explicitly
  *    allowed to store a transformed copy (§1.15, README: "a parent that
  *    transforms the document is still free to store whatever it likes"), and
- *    such a copy is a different object after every commit. Treating it as an
- *    assertion issues a `replaceDoc`, and `replaceDoc` clears undo/redo — so
- *    undo would be permanently dead for those consumers.
+ *    such a copy is a different object after every commit.
  *
- * Anything else is the parent asserting a different document — including the
- * §1.15 rejection case, where the prop is the pre-commit document and is
- * therefore structurally DIFFERENT from what the store now holds, so the
- * rollback still fires.
+ * Anything else is the parent asserting a different document — a transform to
+ * adopt, or a copy of the pre-commit document to reject a commit and roll it
+ * back. Both keep undo history (`preserveHistory` below); entries that no
+ * longer rebase skip at replay time.
  */
 export function syncIncomingDoc(
   store: VizbrixStore<unknown>,
@@ -309,10 +327,53 @@ export function syncIncomingDoc(
 
   // `rebaseOk`'s replaceDoc arm is exactly this question — "is the document
   // already in the state this op would produce?" — with the schema's own
-  // `Len`-aware, depth-bounded, cycle-safe comparison.
+  // `Len`-aware, cycle-safe comparison.
   if (rebaseOk(currentDoc as unknown as LayoutDoc<never>, op)) return false;
-  store.apply([op], { source: 'api' });
+  // `preserveHistory`: a controlled parent adopting or transforming a commit
+  // is a continuation of the user's session, not a document import. Undo
+  // entries that no longer rebase against the adopted document skip safely.
+  store.apply([op], { source: 'api', preserveHistory: true });
   return true;
+}
+
+/**
+ * The move-button accessible name for one item, from the live store state.
+ *
+ * Built in one place because TWO writers produce it: the item's own render,
+ * and the overlay's order-channel reconciliation — position/count change when
+ * a SIBLING is added, removed or reordered, which does not re-render an
+ * unaffected item, so the overlay refreshes the attribute imperatively.
+ */
+export function moveButtonLabelFor(
+  store: VizbrixStore<unknown>,
+  strings: VizbrixStrings,
+  getLabel: (item: LayoutItemBase) => string,
+  id: string,
+): string | null {
+  const snap = store.getItemView(id);
+  if (!snap) return null;
+  const order = store.getOrder();
+  return strings.moveButtonLabel({
+    label: getLabel(snap.item as LayoutItemBase),
+    x: Math.round(snap.rect.x),
+    y: Math.round(snap.rect.y),
+    w: Math.round(snap.rect.w),
+    h: Math.round(snap.rect.h),
+    position: order.indexOf(id) + 1,
+    count: order.length,
+  });
+}
+
+/**
+ * Dev-mode diagnostic for a call the adapter deliberately refused or a prop
+ * shape that will not do what the caller expects. Silent in production builds
+ * and in any environment without a `console`.
+ */
+export function devWarn(message: string): void {
+  const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+  if (proc?.env?.NODE_ENV === 'production') return;
+  if (typeof console === 'undefined' || typeof console.warn !== 'function') return;
+  console.warn(`vizbrix: ${message}`);
 }
 
 /* ------------------------------------------------------------------ */

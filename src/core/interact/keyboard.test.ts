@@ -157,6 +157,20 @@ describe('nudging', () => {
     expect(rectOf(h, 'a').x).toBe(0);
   });
 
+  it('Cmd/Ctrl+Arrow skips ref/line pairings the snap engine forbids', () => {
+    // s's centre line (410) is the nearest stop ahead of m's end edge (400),
+    // but a centre line may only capture the moving CENTRE (providers.ts), so
+    // the jump lands the centre on it instead: centre 350 → 410, i.e. x 360.
+    const h = setup(
+      makeDoc([
+        item('m', 'a0', { x: 300, y: 100, w: 100, h: 100 }),
+        item('s', 'b0', { x: 0, y: 400, w: 820, h: 50 }),
+      ]),
+    );
+    key(h, 'm', 'ArrowRight', { metaKey: true });
+    expect(rectOf(h, 'm').x).toBe(360);
+  });
+
   it('ignores locked items and view mode', () => {
     const locked = setup(makeDoc([item('a', 'a0', A, { locked: true })]));
     key(locked, 'a', 'ArrowRight');
@@ -271,6 +285,271 @@ describe('grab sessions', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* resize grab sessions                                                */
+/* ------------------------------------------------------------------ */
+
+describe('resize grab sessions (R)', () => {
+  it('R arms a resize grab; arrows size the ghost; Enter commits ONE transaction', () => {
+    const h = setup();
+    key(h, 'a', 'r');
+    expect(h.store.getInteraction()).toEqual({ phase: 'kb-grab', id: 'a', rect: A });
+
+    key(h, 'a', 'ArrowRight', { shiftKey: true }); // w +10
+    key(h, 'a', 'ArrowDown'); // h +1
+    key(h, 'a', 'ArrowUp'); // h -1
+    key(h, 'a', 'ArrowDown', { shiftKey: true }); // h +10
+
+    const state = h.store.getInteraction();
+    // The start edges stay anchored: only w/h move, never x/y.
+    expect(state.phase === 'kb-grab' && state.rect).toEqual({ ...A, w: 210, h: 160 });
+    // Nothing is committed while the ghost is being sized.
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.canUndo()).toBe(false);
+
+    key(h, 'a', 'Enter');
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(rectOf(h, 'a')).toEqual({ ...A, w: 210, h: 160 });
+
+    // One session = one undo step, however many arrow presses it took.
+    h.store.undo();
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.canUndo()).toBe(false);
+  });
+
+  it('Space and R commit too, and Shift+R still arms', () => {
+    const h = setup();
+    key(h, 'a', 'R', { shiftKey: true });
+    expect(h.store.getInteraction().phase).toBe('kb-grab');
+    key(h, 'a', 'ArrowRight');
+    key(h, 'a', ' ');
+    expect(rectOf(h, 'a').w).toBe(201);
+
+    key(h, 'a', 'r');
+    key(h, 'a', 'ArrowLeft');
+    key(h, 'a', 'r'); // R during its own session commits, mirroring Enter
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(rectOf(h, 'a').w).toBe(200);
+  });
+
+  it('announces the session through existing strings only', () => {
+    const h = setup();
+    key(h, 'a', 'r');
+    key(h, 'a', 'ArrowRight');
+    key(h, 'a', 'Enter');
+    expect(h.announcements).toEqual([
+      // Session start reuses `grabbed`; no new required string for locales.
+      { message: 'Revenue chart grabbed. 100, 100. Item 1 of 2.', tone: 'assertive' },
+      // Size status while the ghost changes is polite, like `moved`.
+      { message: 'Revenue chart, resized to 201 by 150.', tone: 'polite' },
+      // The commit is a transition (§11), so `resized` fires assertively with
+      // the final w/h in the context.
+      { message: 'Revenue chart, resized to 201 by 150.', tone: 'assertive' },
+    ]);
+  });
+
+  it('keeps Left/Right as SCREEN directions under RTL', () => {
+    const h = setup(makeDoc([item('a', 'a0', A)], 'rtl'));
+    key(h, 'a', 'r');
+    // The width is driven at the logical end edge — the physical LEFT edge
+    // under RTL — so screen-left grows and screen-right shrinks.
+    key(h, 'a', 'ArrowLeft');
+    let state = h.store.getInteraction();
+    expect(state.phase === 'kb-grab' && state.rect).toEqual({ ...A, w: 201 });
+    key(h, 'a', 'ArrowRight');
+    key(h, 'a', 'ArrowRight');
+    state = h.store.getInteraction();
+    expect(state.phase === 'kb-grab' && state.rect).toEqual({ ...A, w: 199 });
+  });
+
+  it('clamps to min/max live and never sizes below 1px', () => {
+    const h = setup(makeDoc([item('a', 'a0', A, { maxW: 205, minH: 145 })]));
+    key(h, 'a', 'r');
+    key(h, 'a', 'ArrowRight', { shiftKey: true }); // 210 → clamped to maxW 205
+    key(h, 'a', 'ArrowRight'); // pinned at the limit
+    key(h, 'a', 'ArrowUp', { shiftKey: true }); // 140 → clamped to minH 145
+    let state = h.store.getInteraction();
+    expect(state.phase === 'kb-grab' && state.rect).toEqual({ ...A, w: 205, h: 145 });
+    key(h, 'a', 'Enter');
+    expect(rectOf(h, 'a')).toEqual({ ...A, w: 205, h: 145 });
+
+    // With no declared minimum the floor is 1px — a shrink never collapses
+    // the rect to nothing or below.
+    const tiny = setup(makeDoc([item('t', 't0', { x: 0, y: 0, w: 3, h: 3 })]));
+    key(tiny, 't', 'r');
+    key(tiny, 't', 'ArrowLeft', { shiftKey: true });
+    key(tiny, 't', 'ArrowUp', { shiftKey: true });
+    key(tiny, 't', 'ArrowLeft');
+    state = tiny.store.getInteraction();
+    expect(state.phase === 'kb-grab' && state.rect).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+  });
+
+  it('Escape cancels and reverts, committing nothing', () => {
+    const h = setup();
+    key(h, 'a', 'r');
+    key(h, 'a', 'ArrowRight', { shiftKey: true });
+    key(h, 'a', 'Escape');
+
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.canUndo()).toBe(false);
+    expect(h.announcements.at(-1)).toEqual({
+      message: 'Revenue chart move canceled. Back at 100, 100.',
+      tone: 'assertive',
+    });
+  });
+
+  it('a commit at the starting size records nothing', () => {
+    const h = setup();
+    key(h, 'a', 'r');
+    key(h, 'a', 'Enter'); // untouched ghost
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(h.store.canUndo()).toBe(false);
+
+    key(h, 'a', 'r');
+    key(h, 'a', 'ArrowRight');
+    key(h, 'a', 'ArrowLeft'); // grown and shrunk back: same size on commit
+    key(h, 'a', 'r');
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.canUndo()).toBe(false);
+  });
+
+  it('keeps the session live when the commit lands on a forbidden overlap', () => {
+    // a's end edge touches b's start edge: one px of growth and they overlap.
+    const h = setup(
+      makeDoc([
+        item('a', 'a0', A, { collision: 'forbid' }),
+        item('b', 'b0', { x: 300, y: 100, w: 200, h: 150 }),
+      ]),
+    );
+    key(h, 'a', 'r');
+    key(h, 'a', 'ArrowRight');
+    key(h, 'a', 'Enter');
+    // §1.12 through the same commitRects chokepoint as the move grab: the
+    // landing is refused, the session stays live, announced assertively.
+    expect(h.store.getInteraction().phase).toBe('kb-grab');
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.canUndo()).toBe(false);
+    expect(h.announcements.at(-1)).toEqual({
+      message: 'Revenue chart move canceled. Back at 100, 100.',
+      tone: 'assertive',
+    });
+
+    key(h, 'a', 'ArrowLeft');
+    key(h, 'a', 'ArrowLeft');
+    key(h, 'a', 'Enter');
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(rectOf(h, 'a').w).toBe(199);
+  });
+
+  it('losing focus cancels the resize grab', () => {
+    const h = setup();
+    key(h, 'a', 'r');
+    key(h, 'a', 'ArrowRight');
+    h.nodes
+      .get('a')!
+      .dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.canUndo()).toBe(false);
+  });
+
+  it('Delete during a resize grab removes the item and clears the session', () => {
+    const h = setup();
+    key(h, 'a', 'r');
+    key(h, 'a', 'Delete');
+    expect(h.store.getItem('a')).toBeUndefined();
+    expect(h.store.getInteraction().phase).toBe('idle');
+  });
+
+  it('a mode flip to view freezes the session; detach (the adapter path) cancels it', () => {
+    const h = setup();
+    key(h, 'a', 'r');
+    key(h, 'a', 'ArrowRight');
+    h.store.setMode('view');
+    // Keys are inert in view mode: the ghost can neither move nor commit.
+    key(h, 'a', 'ArrowRight');
+    key(h, 'a', 'Enter');
+    expect(rectOf(h, 'a')).toEqual(A);
+    // A mode flip tears the controller down in the adapter; its detach cancels
+    // the session outright — the same rule the move grab follows.
+    h.detach();
+    expect(h.store.getInteraction().phase).toBe('idle');
+    h.store.setMode('edit');
+    expect(h.store.canUndo()).toBe(false);
+  });
+
+  it('ignores locked items and view mode', () => {
+    const locked = setup(makeDoc([item('a', 'a0', A, { locked: true })]));
+    key(locked, 'a', 'r');
+    expect(locked.store.getInteraction().phase).toBe('idle');
+
+    const h = setup();
+    h.store.setMode('view');
+    key(h, 'a', 'r');
+    expect(h.store.getInteraction().phase).toBe('idle');
+  });
+
+  it('is inert from a form control, like every other layout shortcut', () => {
+    const h = setup();
+    const input = document.createElement('input');
+    h.nodes.get('a')!.appendChild(input);
+    const ev = new KeyboardEvent('keydown', { key: 'r', bubbles: true, cancelable: true });
+    input.dispatchEvent(ev);
+    // The keystroke reaches the field as the letter r, not a layout command.
+    expect(ev.defaultPrevented).toBe(false);
+    expect(h.store.getInteraction().phase).toBe('idle');
+  });
+
+  it('leaves Cmd/Ctrl+R to the browser', () => {
+    const h = setup();
+    for (const init of [{ ctrlKey: true }, { metaKey: true }] as const) {
+      const ev = new KeyboardEvent('keydown', { key: 'r', bubbles: true, cancelable: true, ...init });
+      h.nodes.get('a')!.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+    }
+    expect(h.store.getInteraction().phase).toBe('idle');
+  });
+
+  it('R during a MOVE grab is ignored — the arrows keep meaning "move"', () => {
+    const h = setup();
+    key(h, 'a', 'Enter');
+    key(h, 'a', 'r');
+    // Still the same move session: nothing committed, nothing switched.
+    expect(h.store.getInteraction().phase).toBe('kb-grab');
+    key(h, 'a', 'ArrowRight');
+    const state = h.store.getInteraction();
+    expect(state.phase === 'kb-grab' && state.rect).toEqual({ ...A, x: 101 });
+    key(h, 'a', 'Enter');
+    expect(rectOf(h, 'a')).toEqual({ ...A, x: 101 });
+  });
+
+  it('R hands an armed placement over to a resize grab, silently', () => {
+    const h = setup();
+    h.controller.beginPlace('a');
+    key(h, 'a', 'r');
+
+    // Exactly one live session, and the hand-over is not announced as a cancel.
+    expect(h.store.getInteraction()).toEqual({ phase: 'kb-grab', id: 'a', rect: A });
+    expect(h.announcements.map((a) => a.message).some((m) => m.includes('canceled'))).toBe(false);
+
+    key(h, 'a', 'ArrowRight');
+    key(h, 'a', 'Enter');
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(rectOf(h, 'a').w).toBe(201);
+  });
+
+  it('refuses to arm a placement while a resize grab is live', () => {
+    const h = setup();
+    key(h, 'a', 'r');
+    h.controller.beginPlace('a');
+    expect(h.store.getInteraction().phase).toBe('kb-grab');
+    // Never armed, so a landing attempt is a no-op.
+    h.controller.completePlace({ x: 700, y: 400 });
+    expect(rectOf(h, 'a')).toEqual(A);
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /* content that owns its own keys                                      */
 /* ------------------------------------------------------------------ */
 
@@ -381,6 +660,43 @@ describe('tap-to-place and the keyboard', () => {
     key(h, 'a', 'Enter');
     h.controller.beginPlace('a');
     expect(h.store.getInteraction().phase).toBe('kb-grab');
+  });
+
+  it('focus leaving the container disarms an armed placement', () => {
+    // The Escape that ends a placement lives on the container's keydown
+    // listener, so once focus is gone the armed state has no exit and the
+    // next press inside the container would teleport the item.
+    const h = setup();
+    h.controller.beginPlace('a');
+    h.nodes
+      .get('a')!
+      .dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(h.announcements.at(-1)?.message).toContain('canceled');
+
+    // Disarmed for real: a later landing attempt is a no-op.
+    h.controller.completePlace({ x: 700, y: 400 });
+    expect(rectOf(h, 'a')).toEqual(A);
+  });
+
+  it('keeps the placement armed when focus moves within the dashboard', () => {
+    const h = setup();
+    h.controller.beginPlace('a');
+    h.nodes
+      .get('a')!
+      .dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: h.nodes.get('b')! }));
+    expect(h.store.getInteraction()).toEqual({ phase: 'placing', id: 'a' });
+  });
+
+  it('removing the armed item disarms the placement', () => {
+    const h = setup();
+    h.controller.beginPlace('a');
+    key(h, 'a', 'Delete');
+    expect(h.store.getItem('a')).toBeUndefined();
+    // The transient channel does not stay on `placing` for a dead id.
+    expect(h.store.getInteraction().phase).toBe('idle');
+    h.controller.completePlace({ x: 300, y: 300 });
+    expect(h.store.getInteraction().phase).toBe('idle');
   });
 });
 

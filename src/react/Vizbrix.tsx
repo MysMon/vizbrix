@@ -9,9 +9,12 @@
  *   symmetric effect, and no store is ever assigned to a ref during render.
  * - **Controlled mode (§1.15).** A commit lands in the store FIRST and is
  *   reported to the parent afterwards, so a slow parent can never stutter a
- *   drag. Rejection is detected as "the prop did not change at all after a
- *   commit" — not as "the prop is not what I asked for", because a parent is
- *   entitled to transform what it stores.
+ *   drag. Whatever the parent passes next is honoured: the emitted document
+ *   (or a structural echo of it) is a no-op, a transformed document is
+ *   adopted, and re-asserting a copy of the PREVIOUS document rolls the
+ *   commit back. Adoption may happen asynchronously (after an await, inside a
+ *   transition) — the store keeps the committed document until the prop
+ *   changes, and adoption never clears undo history.
  * - **Mode default `'view'` (§1.16).** No interaction controller is created, no
  *   listener is attached, no overlay is mounted, no editing ARIA is emitted.
  *   The geometry is byte-identical to edit mode.
@@ -51,6 +54,7 @@ import { defaultStrings } from '../core/locales/en';
 import type { AnnounceTargets, AnyItemRenderer, ItemRenderer, VizbrixRuntime } from './context';
 import {
   VizbrixContext,
+  devWarn,
   sanitizeInstanceId,
   syncIncomingDoc,
   useContainerMeasure,
@@ -58,6 +62,7 @@ import {
 import { Item } from './Item';
 import { Overlay, announceTo } from './Overlay';
 import { StyleSheet } from './StyleSheet';
+import type { VizbrixApi } from './hooks';
 
 /* ------------------------------------------------------------------ */
 /* Props                                                               */
@@ -75,8 +80,13 @@ export interface VizbrixProps<TData = undefined> {
   snap?: SnapConfig | false;
   /** Touch activation delay in ms; `'off'` switches to a 3px threshold. */
   longPress?: number | 'off';
+  /**
+   * Pass an identity-stable object (a module-level locale like `ja`, or a
+   * memoized custom bundle). A fresh object literal here re-renders every item
+   * on every parent render — locale bundles are constants, treat them as such.
+   */
   strings?: VizbrixStrings;
-  /** Force a named container size (tests, Storybook). */
+  /** Force a named container size (tests, previews). */
   size?: string;
   /** Stable id for CSS scoping. Defaults to `useId()`. */
   instanceId?: string;
@@ -102,6 +112,14 @@ export interface VizbrixProps<TData = undefined> {
   renderKey?: unknown;
   /** Rendered instead of the dashboard when the document cannot be shown. */
   renderIncompatible?: (outcome: LoadOutcome) => ReactNode;
+  /**
+   * Imperative access to the same API `useVizbrix()` returns, for chrome that
+   * lives OUTSIDE the provider subtree — an app toolbar, a command palette, a
+   * keyboard-shortcut layer. Assigned after mount, nulled on unmount.
+   */
+  apiRef?:
+    | { current: VizbrixApi<TData> | null }
+    | ((api: VizbrixApi<TData> | null) => void);
 }
 
 /* ------------------------------------------------------------------ */
@@ -123,9 +141,10 @@ function defaultLabel(item: LayoutItemBase): string {
 /**
  * Is this document renderable at all?
  *
- * Only consulted when the consumer passed `renderIncompatible` — the component
- * takes a `LayoutDoc`, so the expensive `load()` path belongs at the app's
- * persistence boundary, not on every render of the dashboard.
+ * Gates both construction and controlled reconciliation, so an unusable
+ * document can never reach the store through either door. This is a
+ * structural check, not `load()` — migration and repair belong at the app's
+ * persistence boundary.
  */
 function incompatibilityOf(doc: LayoutDoc<unknown> | undefined): LoadOutcome | null {
   if (!doc || typeof doc !== 'object') {
@@ -203,16 +222,21 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
     children,
     renderKey,
     renderIncompatible,
+    apiRef,
   } = props;
 
   const controlled = layout !== undefined;
   const reactId = useId();
   const instanceId = instanceIdProp ?? sanitizeInstanceId(reactId);
 
-  const incompatible = useMemo(
-    () => (renderIncompatible ? incompatibilityOf((layout ?? defaultLayout) as LayoutDoc<unknown>) : null),
-    [renderIncompatible, layout, defaultLayout],
-  );
+  // Computed unconditionally: it also gates what the reconciliation effect is
+  // allowed to feed the store, not just whether the fallback UI renders.
+  // Providing NO document is not an error — an empty dashboard seeded through
+  // `useVizbrix().store.addItem(…)` is a supported shape.
+  const incompatible = useMemo(() => {
+    const provided = (layout ?? defaultLayout) as LayoutDoc<unknown> | undefined;
+    return provided === undefined ? null : incompatibilityOf(provided);
+  }, [layout, defaultLayout]);
 
   /* ---------------- store ---------------- */
 
@@ -250,13 +274,10 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
   const onAnnounceRef = useRef(onAnnounce);
   const lastEmittedRef = useRef<LayoutDoc<unknown> | null>(seed);
   const syncingRef = useRef(false);
-  const controlledRef = useRef(controlled);
-  const [commitTick, setCommitTick] = useState(0);
 
   useEffect(() => {
     onLayoutChangeRef.current = onLayoutChange;
     onAnnounceRef.current = onAnnounce;
-    controlledRef.current = controlled;
   });
 
   useEffect(() => {
@@ -267,9 +288,6 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
       const doc = store.getDoc();
       lastEmittedRef.current = doc;
       onLayoutChangeRef.current?.(doc as unknown as LayoutDoc<TData>, tx);
-      // Rejection detection needs a render after every commit: the prop may
-      // come back unchanged, and "unchanged" is only observable by looking.
-      if (controlledRef.current) setCommitTick((tick) => tick + 1);
     };
     txSinkRef.current = sink;
     // Anything a child effect committed on the way up now gets reported, in
@@ -303,6 +321,15 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
   useEffect(() => {
     renderRef.current = children as unknown as AnyItemRenderer;
   }, [children]);
+
+  // `getLabel` gets the same treatment as `children`: consumers pass an inline
+  // arrow that closes over app state, and a new identity re-rendering every
+  // item on every parent render is the cost this library exists to avoid.
+  const getLabelRef = useRef(getLabel);
+  getLabelRef.current = getLabel;
+  useEffect(() => {
+    getLabelRef.current = getLabel;
+  }, [getLabel]);
 
   /* ---------------- refs into the DOM ---------------- */
 
@@ -364,17 +391,32 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
     scaled ? wrapperEl : canvasEl,
   );
 
-  // Controlled reconciliation. Runs on every incoming prop AND after every
-  // commit, which is what makes "the parent left the prop alone" observable.
+  // Controlled reconciliation: whatever document the parent asserts is
+  // honoured, whenever it arrives — adoption may be asynchronous (after an
+  // await, inside a transition), so nothing here is keyed to commits. A prop
+  // that would have been refused at construction is refused here too, instead
+  // of bypassing the gate into a store that never validates a replaceDoc.
   useEffect(() => {
     if (!controlled) return;
+    if (incompatibilityOf(layout as LayoutDoc<unknown>) !== null) return;
     syncingRef.current = true;
     try {
       syncIncomingDoc(store, layout as LayoutDoc<unknown>, lastEmittedRef.current);
     } finally {
       syncingRef.current = false;
     }
-  }, [store, controlled, layout, commitTick]);
+  }, [store, controlled, layout]);
+
+  // An unusable document with no `renderIncompatible` renders an empty
+  // dashboard; say why, or the blank screen is undebuggable.
+  useEffect(() => {
+    if (incompatible && !renderIncompatible) {
+      devWarn(
+        `the provided layout document cannot be rendered (${incompatible.status}). ` +
+          'Run load() at your persistence boundary, or pass renderIncompatible to show a fallback.',
+      );
+    }
+  }, [incompatible, renderIncompatible]);
 
   // The interaction layer. Created and destroyed symmetrically so StrictMode's
   // double mount leaves exactly one controller attached.
@@ -408,6 +450,29 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
     controllerRef.current?.setOptions({ snap, longPress, strings, getLabel, onAnnounce: announce });
   }, [snap, longPress, strings, getLabel, announce]);
 
+  // External chrome: the same surface `useVizbrix()` hands to descendants,
+  // exposed through a ref for toolbars that live outside this subtree.
+  useEffect(() => {
+    if (!apiRef) return;
+    const api: VizbrixApi<TData> = {
+      store: store as unknown as VizbrixStore<TData>,
+      instanceId,
+      mode,
+      isEditing: mode === 'edit',
+      strings,
+      beginPlace: (id: string) => controllerRef.current?.beginPlace(id),
+      completePlace: (point: { x: number; y: number }) =>
+        controllerRef.current?.completePlace(point),
+      cancelPlace: () => controllerRef.current?.cancelPlace(),
+    };
+    if (typeof apiRef === 'function') apiRef(api);
+    else apiRef.current = api;
+    return () => {
+      if (typeof apiRef === 'function') apiRef(null);
+      else apiRef.current = null;
+    };
+  }, [apiRef, store, instanceId, mode, strings]);
+
   /* ---------------- context ---------------- */
 
   const runtime = useMemo<VizbrixRuntime>(
@@ -416,20 +481,20 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
       instanceId,
       mode,
       strings,
-      getLabel,
+      getLabelRef,
       controllerRef,
       renderRef,
       renderKey,
       announceRef,
     }),
-    [store, instanceId, mode, strings, getLabel, renderKey],
+    [store, instanceId, mode, strings, renderKey],
   );
 
   // NOTE: Cmd/Ctrl+Z (and ⇧Z for redo) is handled by the core keyboard sensor,
   // which owns every key the editor responds to. A second React `onKeyDown`
   // here would undo TWICE for one keystroke: the sensor's listener sits on this
   // same element and calls `preventDefault()` but not `stopPropagation()`, so
-  // React's delegated handler would still run. `react.test.tsx` pins that down.
+  // React's delegated handler would still run.
 
   if (incompatible && renderIncompatible) {
     return <>{renderIncompatible(incompatible)}</>;
@@ -437,13 +502,7 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
 
   const editing = mode === 'edit';
   const canvas = (
-    <div
-      ref={setCanvas}
-      data-vzb={instanceId}
-      data-vzb-mode={mode}
-      className={scaled ? undefined : className}
-      style={scaled ? undefined : style}
-    >
+    <div ref={setCanvas} data-vzb={instanceId} data-vzb-mode={mode}>
       <StyleSheet />
       {ids.map((id) => (
         <Item key={id} id={id} />
@@ -461,7 +520,13 @@ export function Vizbrix<TData = undefined>(props: VizbrixProps<TData>): ReactEle
           {canvas}
         </div>
       ) : (
-        canvas
+        // Container queries resolve against the nearest ANCESTOR container, so
+        // the query container is a dedicated wrapper around the positioning
+        // root — the `@container` blocks (size overrides, tier-3 stack) could
+        // never restyle the root if the root queried itself.
+        <div data-vzb-container={instanceId} className={className} style={style}>
+          {canvas}
+        </div>
       )}
     </VizbrixContext.Provider>
   );

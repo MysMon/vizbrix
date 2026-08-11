@@ -18,6 +18,21 @@ describe('migration registry', () => {
     expect(planMigration(0, 1, MIGRATIONS)).toBeNull();
   });
 
+  it('rejects an empty registry once the schema has moved past v1', () => {
+    expect(checkRegistry([], 1)).toEqual([]);
+    expect(checkRegistry([], 2)).toEqual([expect.stringContaining('registry is empty')]);
+    expect(checkRegistry([], 7)).toEqual([expect.stringContaining('v7')]);
+  });
+
+  it('does not invent a version when no step is usable', () => {
+    const problems = checkRegistry([{ from: 1.5, to: 2.5, up: (d) => d }], 2);
+    expect(problems.some((p) => p.includes('NaN'))).toBe(false);
+    expect(problems).toEqual(
+      expect.arrayContaining([expect.stringContaining('must be integers')]),
+    );
+    expect(problems.length).toBeGreaterThan(1);
+  });
+
   it('rejects a chain with a hole', () => {
     const broken: MigrationRegistry = [
       { from: 1, to: 2, up: (d) => d },
@@ -144,6 +159,42 @@ describe('migrate() pipeline', () => {
     expect(outcome.issues.some((i) => i.path === 'version')).toBe(false);
   });
 
+  it('says when the drop audit stopped short of the bottom of a payload', () => {
+    const deep: MigrationRegistry = [
+      {
+        from: 0,
+        to: 1,
+        up: (raw) => ({
+          ...raw,
+          items: (raw.items as Record<string, unknown>[]).map((item) => ({
+            ...item,
+            data: nest(15, { keep: 1 }),
+          })),
+        }),
+      },
+    ];
+    const outcome = migrate(
+      {
+        version: 0,
+        container: { base: { width: 100 } },
+        items: [
+          {
+            id: 'a',
+            x: { mode: 'start', offset: 0, size: 1 },
+            y: { mode: 'start', offset: 0, size: 1 },
+            data: nest(15, { keep: 1, drop: 2 }),
+          },
+        ],
+      },
+      deep,
+    );
+    expect(outcome.status).toBe('migrated');
+    if (outcome.status !== 'migrated') return;
+    const truncated = outcome.issues.find((i) => i.path.endsWith('…'));
+    expect(truncated?.severity).toBe('warn');
+    expect(truncated?.message).toContain('are not reported');
+  });
+
   it('surfaces the fixture through load() when the registry is supplied', () => {
     expect(load(V0_DOC, registry).status).toBe('migrated');
     expect(load(V0_DOC).status).toBe('invalid');
@@ -210,4 +261,29 @@ describe('diffKeyPaths()', () => {
     cyclic.self = cyclic;
     expect(() => diffKeyPaths(cyclic, {})).not.toThrow();
   });
+
+  it('marks the subtree it stopped walking instead of reporting nothing', () => {
+    const paths = diffKeyPaths({ data: nest(15, { keep: 1, drop: 2 }) }, { data: nest(15, { keep: 1 }) });
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).toMatch(/…$/);
+    expect(paths[0]).toMatch(/^data\./);
+  });
+
+  it('does not mark a subtree it walked to the bottom', () => {
+    expect(diffKeyPaths({ data: nest(3, { keep: 1, drop: 2 }) }, { data: nest(3, { keep: 1 }) })).toEqual([
+      'data.a.a.a.drop',
+    ]);
+  });
+
+  it('does not mark a subtree both documents share by reference', () => {
+    const shared = nest(15, { keep: 1 });
+    expect(diffKeyPaths({ data: shared }, { data: shared })).toEqual([]);
+  });
 });
+
+/** `{ a: { a: { … leaf } } }`, `depth` levels of nesting above `leaf`. */
+function nest(depth: number, leaf: Record<string, unknown>): Record<string, unknown> {
+  let node: Record<string, unknown> = leaf;
+  for (let i = 0; i < depth; i++) node = { a: node };
+  return node;
+}

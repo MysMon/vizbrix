@@ -8,23 +8,31 @@
  * `switch` instead of a `try`.
  */
 
-import type { Issue, LayoutDoc, LoadOutcome } from './types';
+import type { AxisMode, Issue, LayoutDoc, LoadOutcome } from './types';
 import { SCHEMA_VERSION } from './types';
 import { validate } from './validate';
 import { normalize } from './normalize';
 import { migrate } from './migrate';
 import type { MigrationRegistry } from './migrate';
 import {
+  AXIS_MODES,
+  BASE_KEYS,
   CONTAINER_KEYS,
   DOC_KEYS,
   ITEM_KEYS,
+  LEN_KEYS,
+  OVERRIDE_KEYS,
+  SIZE_KEYS,
   indexPath,
   isFiniteNumber,
   isPlainObject,
   issueError,
   parseInput,
+  placementFields,
   unknownKeysOf,
 } from './internal';
+
+const MODE_SET = new Set<string>(AXIS_MODES);
 
 /**
  * Reads a persisted layout.
@@ -127,6 +135,13 @@ function forwardDegrade<TData>(
  * Paths this reader does not understand, in document order. Everything listed
  * here is parked in `$unknown` (document and item level) or dropped, and is
  * re-emitted verbatim by `serialize()` when it was parkable.
+ *
+ * The walk covers every level at which `normalize` discards an unrecognized
+ * key — not only the document, item and container roots but `container.base`,
+ * each declared size, both placements of an item and of each of its size
+ * overrides, and the `Len` terms inside them. A caller that gates a write-back
+ * on `ignored` is deciding whether saving would destroy a newer writer's data,
+ * so a path missing here is a false all-clear.
  */
 function collectIgnoredPaths(raw: Record<string, unknown>): string[] {
   const ignored: string[] = [];
@@ -138,16 +153,64 @@ function collectIgnoredPaths(raw: Record<string, unknown>): string[] {
       if (!isPlainObject(item)) continue;
       const path = indexPath('items', i);
       for (const key of unknownKeysOf(item, ITEM_KEYS)) ignored.push(`${path}.${key}`);
+      collectPlacement(item.x, `${path}.x`, ignored);
+      collectPlacement(item.y, `${path}.y`, ignored);
+      if (isPlainObject(item.at)) {
+        for (const name of Object.keys(item.at)) {
+          const override: unknown = item.at[name];
+          if (!isPlainObject(override)) continue;
+          const p = `${path}.at.${name}`;
+          for (const key of unknownKeysOf(override, OVERRIDE_KEYS)) ignored.push(`${p}.${key}`);
+          collectPlacement(override.x, `${p}.x`, ignored);
+          collectPlacement(override.y, `${p}.y`, ignored);
+        }
+      }
     }
   }
 
   if (isPlainObject(raw.container)) {
-    for (const key of unknownKeysOf(raw.container, CONTAINER_KEYS)) {
+    const container = raw.container;
+    for (const key of unknownKeysOf(container, CONTAINER_KEYS)) {
       ignored.push(`container.${key}`);
+    }
+    if (isPlainObject(container.base)) {
+      for (const key of unknownKeysOf(container.base, BASE_KEYS)) {
+        ignored.push(`container.base.${key}`);
+      }
+    }
+    if (isPlainObject(container.sizes)) {
+      for (const name of Object.keys(container.sizes)) {
+        const def: unknown = container.sizes[name];
+        if (!isPlainObject(def)) continue;
+        for (const key of unknownKeysOf(def, SIZE_KEYS)) {
+          ignored.push(`container.sizes.${name}.${key}`);
+        }
+      }
     }
   }
 
   return ignored;
+}
+
+/**
+ * Adds the parts of one placement this reader drops: an axis mode it has never
+ * heard of (the whole placement goes), the fields that mode does not use, and
+ * unknown keys inside each `Len` term.
+ */
+function collectPlacement(value: unknown, path: string, ignored: string[]): void {
+  if (!isPlainObject(value)) return;
+  const mode = value.mode;
+  if (typeof mode !== 'string' || !MODE_SET.has(mode)) {
+    ignored.push(path);
+    return;
+  }
+  const fields = placementFields(mode as AxisMode);
+  for (const key of unknownKeysOf(value, ['mode', ...fields])) ignored.push(`${path}.${key}`);
+  for (const field of fields) {
+    const term: unknown = value[field];
+    if (!isPlainObject(term)) continue;
+    for (const key of unknownKeysOf(term, LEN_KEYS)) ignored.push(`${path}.${field}.${key}`);
+  }
 }
 
 /* ------------------------------------------------------------------ */

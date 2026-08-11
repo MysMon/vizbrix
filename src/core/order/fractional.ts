@@ -203,7 +203,15 @@ function generateKeyCandidate(a: string | null, b: string | null): string {
     const ib = integerPart(b as string);
     const fb = (b as string).slice(ib.length);
     const dec = decrementInteger(ib);
-    return dec !== null ? dec : ib + midpointFraction('', fb);
+    if (dec !== null) return dec;
+    if (fb === '') {
+      // `b` is the bare minimum integer key: the key space holds nothing
+      // below it. (The ceiling is different — a maximal integer key can
+      // always grow a fractional suffix, but a suffix sorts ABOVE its
+      // prefix, never below.)
+      throw new RangeError('fractional: no key space below the minimum key');
+    }
+    return ib + midpointFraction('', fb);
   }
 
   if (b === null) {

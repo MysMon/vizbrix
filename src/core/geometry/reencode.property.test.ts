@@ -1,5 +1,5 @@
 /**
- * Marketing-asset test (spec §15.6): resolve ∘ reencode is the identity within
+ * Property test (spec §15.6): resolve ∘ reencode is the identity within
  * half a pixel, for every anchor mode, across randomized positions, sizes and
  * container extents.
  *

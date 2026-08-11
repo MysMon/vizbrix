@@ -1,20 +1,21 @@
-# Migrating from react-grid-layout
+# Importing a column-grid layout
 
-`importFromRGL` is a **one-way converter**, not a compatibility shim. RGL stores grid cells;
-vizbrix stores expressions. A shim would have to leak the cell model back into the core, which is
-the one thing this library exists not to do — so the conversion happens once, at the boundary, and
-afterwards you have a vizbrix document.
+Most cell-based dashboard tools persist layouts in the same de-facto shape: an array of
+`{ i, x, y, w, h }` items measured in *columns and rows*, optionally one array per breakpoint.
+`importFromGrid` converts that shape into a vizbrix document.
 
-react-grid-layout is a good library. If a 12-column grid with compaction is what your product wants,
-stay on it. Migrate when the grid is what keeps getting in the way.
+It is a **one-way converter**, not a compatibility shim. A grid stores cells; vizbrix stores
+expressions. A shim would have to leak the cell model back into the core, which is the one thing
+this library exists not to do — so the conversion happens once, at the boundary, and afterwards you
+have a vizbrix document.
 
 ## The one-shot conversion
 
 ```ts
-import { importFromRGL, isLoaded } from 'vizbrix';
+import { importFromGrid, isLoaded } from 'vizbrix';
 import { serialize } from 'vizbrix/schema';
 
-const outcome = importFromRGL(savedLayout, { cols: 12, rowHeight: 30, margin: [10, 10] });
+const outcome = importFromGrid(savedLayout, { cols: 12, rowHeight: 30, margin: [10, 10] });
 
 if (isLoaded(outcome)) {
   await db.dashboards.update(id, { layout: serialize(outcome.doc), engine: 'vizbrix' });
@@ -23,23 +24,23 @@ if (isLoaded(outcome)) {
 }
 ```
 
-`importFromRGL` returns the same `LoadOutcome` as `load()` and never throws. Run it in a migration
-script, write the result back once, and delete the RGL dependency — not at runtime on every page
-load.
+`importFromGrid` returns the same `LoadOutcome` as `load()` and never throws. Run it in a migration
+script and write the result back once — not at runtime on every page load.
 
 ### Options
 
 | option | default | meaning |
 |---|---|---|
-| `cols` | required | RGL's `cols`. A number, or `{ lg: 12, md: 10, … }` for the responsive form |
-| `rowHeight` | required | RGL's `rowHeight` in px |
-| `margin` | `[10, 10]` | RGL's `[horizontal, vertical]` gap |
-| `containerPadding` | `margin` | RGL's container padding |
+| `cols` | required | column count. A number, or `{ lg: 12, md: 10, … }` for the responsive form |
+| `rowHeight` | required | row height in px |
+| `margin` | `[10, 10]` | `[horizontal, vertical]` gap between cells in px |
+| `containerPadding` | `margin` | padding between the grid and the container edge |
 | `containerWidth` | `1200` | the width cells are resolved at, and the produced `base.width` |
-| `breakpoints` | RGL's defaults | min-width thresholds; responsive form only |
+| `breakpoints` | see below | min-width thresholds; responsive form only |
 
-Cells are resolved to pixels using RGL's own `calcGridItemPosition` arithmetic, so the imported
-dashboard is pixel-identical to what RGL painted at `containerWidth`.
+Cells are resolved to pixels with the standard column-grid arithmetic
+(`colWidth = (W − margin·(cols−1) − padding·2) / cols`), so the imported dashboard is
+pixel-identical to what the grid painted at `containerWidth`.
 
 ## Anchor inference
 
@@ -56,7 +57,7 @@ intent is recoverable, and it is what makes the imported layout reflow instead o
 
 Order matters: full-bleed beats right-docked beats proportional.
 
-**The y axis is always `start`.** An RGL grid scrolls, so the container has no definite height and
+**The y axis is always `start`.** A column grid scrolls, so the container has no definite height and
 vertical anchors are unresolvable. See the `height: 'fill'` rule in
 [responsive layout](./responsive.md) — if the imported dashboard should fill a fixed-height frame,
 set `container.height = 'fill'` with a `base.height` afterwards and re-anchor the items you want
@@ -68,18 +69,18 @@ human.
 
 ## Responsive layouts
 
-RGL breakpoints are **min-widths, desktop-last**; vizbrix sizes are **max-widths, desktop-first**.
-The converter maps them so the two selection rules agree exactly at every width: the largest RGL
-breakpoint becomes the document base, and every smaller breakpoint becomes a declared size whose
-`maxWidth` is the min-width of the next larger breakpoint.
+Grid breakpoints are conventionally **min-widths, desktop-last**; vizbrix sizes are **max-widths,
+desktop-first**. The converter maps them so the two selection rules agree exactly at every width:
+the largest breakpoint becomes the document base, and every smaller breakpoint becomes a declared
+size whose `maxWidth` is the min-width of the next larger breakpoint.
 
 ```ts
-importFromRGL({ lg: [...], md: [...], sm: [...] }, { cols: { lg: 12, md: 10, sm: 6 }, rowHeight: 30 });
+importFromGrid({ lg: [...], md: [...], sm: [...] }, { cols: { lg: 12, md: 10, sm: 6 }, rowHeight: 30 });
 ```
 
-With RGL's defaults:
+With the converter's default breakpoints:
 
-| RGL breakpoint | min-width | becomes |
+| breakpoint | min-width | becomes |
 |---|---|---|
 | `lg` | 1200 | the document base (no size entry) |
 | `md` | 996 | `sizes.md = { maxWidth: 1200 }` |
@@ -97,10 +98,10 @@ An item that appears only at a smaller breakpoint is promoted into the base layo
 
 ## What carries over
 
-| RGL | vizbrix |
+| grid layout | vizbrix |
 |---|---|
-| `x, y, w, h` | pixel rect at `containerWidth`, re-encoded with an inferred anchor |
-| `i` (or `id`) | `item.id`. Missing keys get a generated `rgl-N`; duplicates are skipped with a warning |
+| `x, y, w, h` (cells) | pixel rect at `containerWidth`, re-encoded with an inferred anchor |
+| `i` (or `id`) | `item.id`. Missing keys get a generated `cell-N`; duplicates are skipped with a warning |
 | `minW`, `maxW`, `minH`, `maxH` (spans) | `minW`/`maxW`/`minH`/`maxH` in px |
 | `static: true`, `isDraggable: false` | `locked: true` |
 | breakpoint layouts | `container.sizes` + per-item `at` overrides |
@@ -115,27 +116,23 @@ An item that appears only at a smaller breakpoint is promoted into the base layo
   vizbrix has a per-item `collision` policy (`allow` | `guide` | `forbid`, default `allow`) — set it
   where you actually want it. There is deliberately no `push` policy: pushing is compaction under
   another name.
-- **`static` as an algorithm flag.** RGL's `static` means "the compactor may not move this". The
-  closest honest mapping is "the user may not move this", so it becomes `locked: true`. Nothing maps
-  to `collision: 'forbid'` — that would be inventing intent the source document never expressed.
+- **`static` as an algorithm flag.** In a compacting grid, `static` means "the compactor may not
+  move this". The closest honest mapping is "the user may not move this", so it becomes
+  `locked: true`. Nothing maps to `collision: 'forbid'` — that would be inventing intent the source
+  document never expressed.
 - **`isResizable`.** Accepted and ignored; use `locked` or your own chrome.
 - **`rowHeight`, `margin`, `cols`.** Baked into the pixel geometry at import time. There is no grid
   afterwards — if you want one back as a *snapping* behaviour, that is `snap={{ grid: 8 }}`, which
   never touches what is stored.
-- **Drag-in from outside (`droppingItem`), `WidthProvider`, `ResponsiveGridLayout`.** Different
+- **Drag-in from outside, width-measuring wrappers, responsive wrapper components.** Different
   component surface entirely; see [getting started](./getting-started.md).
 
 ## Component-level changes
 
 ```diff
--import GridLayout from 'react-grid-layout';
--import 'react-grid-layout/css/styles.css';
--import 'react-resizable/css/styles.css';
-+import { Vizbrix } from 'vizbrix/react';
-
--<GridLayout layout={layout} cols={12} rowHeight={30} width={1200} onLayoutChange={save}>
+-<GridDashboard layout={layout} cols={12} rowHeight={30} width={1200} onLayoutChange={save}>
 -  {items.map((item) => <div key={item.i}>{item.i}</div>)}
--</GridLayout>
+-</GridDashboard>
 +<Vizbrix defaultLayout={doc} mode="edit" onLayoutChange={(next) => save(next)}>
 +  {(item, ui) => <div {...ui.handleProps}>{item.id}</div>}
 +</Vizbrix>
@@ -155,9 +152,8 @@ Four differences to plan for:
 ## What you get for it
 
 - Widgets stay where they are put, at pixel precision, overlapping if that is the design.
-- The dashboard reflows continuously instead of jumping between five authored layouts.
-- Correct first paint under SSR with no measured width and no `ssr: false`.
+- The dashboard reflows continuously instead of jumping between a handful of authored layouts.
+- Correct first paint under SSR with no measured width.
 - Zero sibling re-renders during a drag, and no compaction pass to be quadratic in.
 - Undo/redo, keyboard placement, WCAG 2.2 SC 2.5.7 tap-to-place, and a versioned layout format —
   all of which were previously your application's problem.
-- Six fewer runtime dependencies.

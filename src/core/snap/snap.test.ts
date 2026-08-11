@@ -45,12 +45,13 @@ function run(
     kind?: 'move' | 'resize';
     handle?: HandleId | null;
     bypass?: boolean;
+    sizeFactor?: number;
   } = {},
 ): { dx: number; dy: number; guides: Guide[] } {
   const engine = createSnapEngine(opts.config);
   engine.begin(snap);
   const out = snapshotResult(
-    engine.query(rect, opts.kind ?? 'move', opts.handle ?? null, opts.bypass ?? false),
+    engine.query(rect, opts.kind ?? 'move', opts.handle ?? null, opts.bypass ?? false, opts.sizeFactor ?? 1),
   );
   engine.end();
   return out;
@@ -318,6 +319,43 @@ describe('resize snapping', () => {
     );
     const r = run(sm, { x: 600, y: 400, w: 296, h: 50 });
     expect(r.dx).toBe(0);
+  });
+
+  it('sizeMatch divides the correction by the edge-response factor', () => {
+    // A from-centre resize changes the size 2 px per px of edge travel, so
+    // matching the 300 px sibling from 296 takes 2 px of correction — the
+    // caller folds it back into the pointer delta and lands exactly 300.
+    const sm = mk(
+      { a: { x: 100, y: 0, w: 300, h: 50 }, m: { x: 600, y: 400, w: 296, h: 50 } },
+      ['m'],
+    );
+    const r = run(sm, { x: 600, y: 400, w: 296, h: 50 }, { kind: 'resize', handle: 'e', sizeFactor: 2 });
+    expect(r.dx).toBeCloseTo(2, 10);
+    // The guide is drawn where the driven edge lands after the fold.
+    const gx = onAxis(r.guides, 'x');
+    expect(gx).toHaveLength(1);
+    expect(gx[0]!.at).toBe(898);
+  });
+
+  it('sizeMatch keeps the flipped sign under a factor when the start edge moves', () => {
+    const sm = mk(
+      { a: { x: 100, y: 0, w: 300, h: 50 }, m: { x: 600, y: 400, w: 296, h: 50 } },
+      ['m'],
+    );
+    const r = run(sm, { x: 600, y: 400, w: 296, h: 50 }, { kind: 'resize', handle: 'w', sizeFactor: 2 });
+    expect(r.dx).toBeCloseTo(-2, 10);
+  });
+
+  it('the factor widens the size capture window to match the edge threshold', () => {
+    // 288 → 300 is a 12 px size difference: outside the plain ±8 window, but
+    // only 6 px of edge travel at factor 2 — still within the user's reach.
+    const sm = mk(
+      { a: { x: 100, y: 0, w: 300, h: 50 }, m: { x: 600, y: 400, w: 288, h: 50 } },
+      ['m'],
+    );
+    const rect = { x: 600, y: 400, w: 288, h: 50 };
+    expect(run(sm, rect, { kind: 'resize', handle: 'e' }).dx).toBe(0);
+    expect(run(sm, rect, { kind: 'resize', handle: 'e', sizeFactor: 2 }).dx).toBeCloseTo(6, 10);
   });
 });
 

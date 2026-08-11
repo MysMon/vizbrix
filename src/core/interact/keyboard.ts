@@ -8,14 +8,26 @@
  * | Arrow / Shift+Arrow    | nudge 1 px / 10 px                                 |
  * | Cmd or Ctrl + Arrow    | jump to the next snap candidate that way           |
  * | Enter / Space          | grab ↔ drop                                        |
+ * | R                      | resize grab ↔ commit (arrows size the ghost)       |
  * | Escape                 | cancel a grab, reverting to where it was picked up  |
  * | Delete / Backspace     | remove                                             |
  * | Cmd/Ctrl + ] / [       | bring to front / send to back                      |
  * | Cmd/Ctrl + Z / ⇧Z      | undo / redo                                        |
  *
- * While tap-to-place is armed the container owns two of them: Escape cancels the
- * placement from anywhere inside it, and Enter/Space hands the item over to a
- * keyboard grab — the two sessions are never armed at once.
+ * A grab session comes in two kinds sharing one machinery: Enter/Space arms a
+ * MOVE grab whose arrows translate the ghost, R arms a RESIZE grab whose arrows
+ * size it — Right/Down grow, Left/Up shrink, driven at the logical end corner
+ * so the start edges stay anchored. That is the keyboard mirror of the
+ * pointer's 8 handles (SC 2.1.1: every pointer operation has a keyboard path).
+ * Either kind: Escape reverts, focus loss cancels, and the drop is ONE
+ * transaction through the same `commitRects` chokepoint, so a `forbid` landing
+ * is refused and the session stays live. Cmd/Ctrl+R is left alone — that
+ * shortcut belongs to the browser.
+ *
+ * While tap-to-place is armed the container owns three of them: Escape cancels
+ * the placement from anywhere inside it, and Enter/Space (R) hands the item
+ * over to a keyboard move (resize) grab — the two sessions are never armed at
+ * once.
  *
  * ## Whose keys are these?
  *
@@ -44,8 +56,8 @@
  */
 
 import type { Rect } from '../schema/types';
-import type { InteractRuntime } from './machine';
-import { NUDGE_COARSE_PX, NUDGE_PX, snapJumpDelta, translated } from './machine';
+import type { GrabState, InteractRuntime } from './machine';
+import { NUDGE_COARSE_PX, NUDGE_PX, resizeRect, snapJumpDelta, translated } from './machine';
 import { itemIdFromPath } from './hit';
 
 interface KeyLike {
@@ -129,6 +141,11 @@ function isCommitKey(key: string): boolean {
   return key === 'Enter' || key === ' ' || key === 'Spacebar';
 }
 
+/** R arms (and commits) a resize grab; Shift+R counts, Cmd/Ctrl+R never does. */
+function isResizeKey(key: string): boolean {
+  return key === 'r' || key === 'R';
+}
+
 const ARROWS: Record<string, { x: number; y: number }> = {
   ArrowLeft: { x: -1, y: 0 },
   ArrowRight: { x: 1, y: 0 },
@@ -173,6 +190,16 @@ export function createKeyboardSensor<TData>(
       return;
     }
 
+    // A live pointer gesture owns the document. Its session and snapshot are
+    // frozen at pointerdown, and a press focuses the item, so keystrokes land
+    // here mid-drag: undo would rewrite the rects the session started from,
+    // a nudge would commit a spurious mid-gesture transaction the drop then
+    // overwrites, and Delete would remove the item the session still holds.
+    // Every shortcut waits until the pointer lets go; Escape is untouched by
+    // this return and cancels the gesture via the pointer sensor's
+    // document-level listener.
+    if (machine.busy()) return;
+
     // A grab owns the keyboard until it ends, wherever focus drifted to;
     // everything else yields to content that handles its own keys.
     const grab = machine.grab();
@@ -186,12 +213,14 @@ export function createKeyboardSensor<TData>(
       return;
     }
 
-    // Enter/Space on the armed item hands tap-to-place over to a keyboard grab
-    // — the keyboard's own way of choosing a location. The two phases can never
-    // be armed at once (§10): the grab is what moves the item from here on.
-    if (placing !== null && grab === null && isCommitKey(ev.key)) {
+    // Enter/Space (R) on the armed item hands tap-to-place over to a keyboard
+    // move (resize) grab — the keyboard's own way of choosing a location or
+    // size. The two phases can never be armed at once (§10): the grab is what
+    // moves the item from here on.
+    const resizeKey = isResizeKey(ev.key) && !mod;
+    if (placing !== null && grab === null && (isCommitKey(ev.key) || resizeKey)) {
       ev.preventDefault?.();
-      beginGrab(placing);
+      beginGrab(placing, resizeKey ? 'resize' : 'move');
       return;
     }
 
@@ -202,7 +231,20 @@ export function createKeyboardSensor<TData>(
     const arrow = ARROWS[ev.key];
     if (arrow) {
       ev.preventDefault?.();
-      nudge(id, arrow, ev);
+      if (grab !== null && grab.kind === 'resize') resizeBy(grab, arrow, ev);
+      else nudge(id, arrow, ev);
+      return;
+    }
+
+    if (resizeKey) {
+      // R during a MOVE grab is ignored: its arrows already mean "move", and
+      // silently flipping them to "resize" mid-session would repurpose every
+      // key the user is holding. R with no session live arms a resize grab;
+      // during a resize grab it commits, same as Enter.
+      if (grab !== null && grab.kind === 'move') return;
+      ev.preventDefault?.();
+      if (grab) drop();
+      else beginGrab(id, 'resize');
       return;
     }
 
@@ -212,7 +254,7 @@ export function createKeyboardSensor<TData>(
       case 'Spacebar':
         ev.preventDefault?.();
         if (grab) drop();
-        else beginGrab(id);
+        else beginGrab(id, 'move');
         return;
       case 'Escape':
         if (!grab) return;
@@ -291,7 +333,7 @@ export function createKeyboardSensor<TData>(
 
   /* ---------------- grab session ---------------- */
 
-  function beginGrab(id: string): void {
+  function beginGrab(id: string, kind: 'move' | 'resize'): void {
     if (machine.busy()) return;
     const item = rt.store.getItem(id);
     const rect = rt.store.getItemView(id)?.rect;
@@ -301,6 +343,7 @@ export function createKeyboardSensor<TData>(
     // the announcement that describes the state the user is now in.
     if (machine.placing() !== null) hooks.cancelPlace(true);
     machine.setGrab({
+      kind,
       id,
       startRect: rect,
       rect,
@@ -316,15 +359,53 @@ export function createKeyboardSensor<TData>(
     // One grab session = ONE transaction, however many arrow presses it took.
     // Committed BEFORE the grab is torn down: a `forbid` landing is refused
     // (§1.12) and the item then stays grabbed, so the user can keep moving it
-    // instead of being dropped into a state the document rejected.
-    const result = rt.commitRects(new Map<string, Rect>([[grab.id, grab.rect]]), 'move', 'keyboard');
+    // instead of being dropped into a state the document rejected. A ghost
+    // still at its start rect commits nothing (the store's same-placement
+    // check), so a no-op session leaves no undo entry.
+    const result = rt.commitRects(
+      new Map<string, Rect>([[grab.id, grab.rect]]),
+      grab.kind,
+      'keyboard',
+    );
     if (result.status === 'blocked') {
       rt.announce('canceled', grab.id, grab.rect);
       return;
     }
     machine.setGrab(null);
     rt.idle();
-    rt.announce('dropped', grab.id);
+    // Ending the session is a transition (§11), hence assertive for both
+    // kinds; `resized` doubles as the resize grab's drop announcement so no
+    // new string is required of custom locales.
+    if (grab.kind === 'resize') rt.announce('resized', grab.id, grab.rect, undefined, 'assertive');
+    else rt.announce('dropped', grab.id);
+  }
+
+  /**
+   * Arrow steps while a RESIZE grab is live: the arrows size the ghost.
+   *
+   * Left/Right stay SCREEN directions (the same nudge convention as `nudge`):
+   * the width is driven at the item's logical END edge, which sits on the
+   * physical LEFT under RTL, so there screen-left grows and screen-right
+   * shrinks — the on-screen moving edge always follows the arrow. The rect
+   * math is the pointer's own `resizeRect`, driven at the logical end corner:
+   * the start edges anchor, min/max clamp live, and a 1 px floor keeps a
+   * shrink from collapsing the rect to nothing.
+   */
+  function resizeBy(grab: GrabState, arrow: { x: number; y: number }, ev: KeyLike): void {
+    const item = rt.store.getItem(grab.id);
+    if (!item || item.locked === true) return;
+    const sign = rt.isRtl() ? -1 : 1;
+    const step = ev.shiftKey === true ? NUDGE_COARSE_PX : NUDGE_PX;
+    const next = resizeRect(grab.rect, 'se', arrow.x * sign * step, arrow.y * step, {
+      minW: Math.max(1, item.minW ?? 1),
+      minH: Math.max(1, item.minH ?? 1),
+      maxW: item.maxW,
+      maxH: item.maxH,
+    });
+    grab.rect = next;
+    rt.setInteraction({ phase: 'kb-grab', id: grab.id, rect: next });
+    // Size status, not a transition: polite, like `moved` during a move grab.
+    rt.announce('resized', grab.id, next);
   }
 
   function cancelGrab(): void {
@@ -345,6 +426,10 @@ export function createKeyboardSensor<TData>(
       machine.setGrab(null);
       rt.idle();
     }
+    // Removing the armed item disarms its placement, so the transient channel
+    // does not keep reporting `placing` for an id that no longer exists.
+    // Silent — `removed` is the announcement that describes what happened.
+    if (machine.placing() === id) hooks.cancelPlace(true);
     // Announced before the commit: afterwards the item has no z position to
     // report, and "3 of 7" is the position it was removed FROM.
     rt.announce('removed', id);
@@ -361,14 +446,19 @@ export function createKeyboardSensor<TData>(
 
   function onFocusOut(evt: Event): void {
     const grab = machine.grab();
-    if (!grab) return;
+    const placing = machine.placing();
+    if (!grab && placing === null) return;
     const container = rt.container();
     if (!container) return;
     const next = (evt as unknown as FocusLike).relatedTarget;
     // Focus left the dashboard entirely: a ghost nobody can see or move is
-    // worse than a cancel.
+    // worse than a cancel. The same goes for an armed placement — its Escape
+    // lives on the container's keydown listener, so once focus is outside
+    // there is no way back out, and the next press inside the container would
+    // teleport the item.
     if (next !== null && next !== undefined && contains(container, next)) return;
     cancelGrab();
+    if (placing !== null) hooks.cancelPlace();
   }
 
   return {

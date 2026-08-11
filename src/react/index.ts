@@ -11,8 +11,8 @@
 export { Vizbrix } from './Vizbrix';
 export type { VizbrixProps } from './Vizbrix';
 
-export { useHistory, useSelection, useVizbrix } from './hooks';
-export type { HistoryApi, SelectionApi, VizbrixApi } from './hooks';
+export { useHistory, useSelection, useVizbrix, useVizbrixItem } from './hooks';
+export type { HistoryApi, ItemStateApi, SelectionApi, VizbrixApi } from './hooks';
 
 export type { ItemRenderer, ItemUI, ItemView } from './context';
 

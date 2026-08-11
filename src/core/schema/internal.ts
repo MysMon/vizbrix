@@ -66,6 +66,12 @@ export const CONTAINER_KEYS = [
   'direction',
 ] as const;
 
+export const BASE_KEYS = ['width', 'height'] as const;
+
+export const SIZE_KEYS = ['maxWidth'] as const;
+
+export const LEN_KEYS = ['pct', 'px'] as const;
+
 export const ITEM_KEYS = [
   'id',
   'x',

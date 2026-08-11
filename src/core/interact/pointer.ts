@@ -44,10 +44,11 @@ import {
   logicalHandle,
   resizeRect,
   sameRect,
+  satisfiedGuides,
   translated,
   unionOf,
 } from './machine';
-import { idsIntersecting, resolvePointerTarget } from './hit';
+import { idsIntersecting, moveButtonItemId, resolvePointerTarget } from './hit';
 
 /** The slice of `PointerEvent` this sensor reads. */
 interface PointerLike {
@@ -231,6 +232,15 @@ export function createPointerSensor<TData>(
     if (machine.grab() !== null) hooks.cancelGrab();
 
     if (machine.placing() !== null) {
+      // A press that starts on the ARMED item's own move button is the
+      // button's toggle, not a landing. This native listener fires before the
+      // adapter's delegated click handler, so completing here would place the
+      // item at the button's own coordinates and turn the documented
+      // "tap the move button again cancels" into a teleport. The session is
+      // left untouched — and the event unconsumed — for the button's click
+      // handler to disarm. Another item's move button is still "anywhere in
+      // the dashboard" and lands the item like any other press.
+      if (moveButtonItemId(pathOf(ev), el) === machine.placing()) return;
       rt.measure();
       hooks.completePlace(rt.toLocal(ev.clientX, ev.clientY));
       ev.preventDefault?.();
@@ -483,7 +493,9 @@ export function createPointerSensor<TData>(
     // The engine corrects the edge(s) the handle drives, which is exactly what
     // the pointer delta drives — so the correction folds back into the delta and
     // the rect is recomputed once, keeping min/max and aspect authoritative.
-    const snap = rt.engine().query(rect, 'resize', edge, rt.bypass(mods));
+    // Under fromCenter the driven edge still moves 1:1 but the SIZE changes at
+    // twice that rate; the factor is what keeps size-match corrections foldable.
+    const snap = rt.engine().query(rect, 'resize', edge, rt.bypass(mods), limits.fromCenter ? 2 : 1);
     if (snap.dx !== 0 || snap.dy !== 0) {
       rect = resizeRect(start, edge, raw.x + snap.dx, raw.y + snap.dy, limits);
     }
@@ -500,7 +512,10 @@ export function createPointerSensor<TData>(
       id,
       handle,
       rect,
-      guides: copyGuides(snap.guides),
+      // The recompute can settle off the queried position (an aspect
+      // re-derivation, a min/max clamp), so only the lines the final rect
+      // actually sits on are drawn.
+      guides: satisfiedGuides(snap.guides, rect, edge),
       valid,
       lastValidRect: session.lastValid?.get(id) ?? null,
     });
@@ -560,8 +575,14 @@ export function createPointerSensor<TData>(
     finish();
   }
 
-  function onPointerCancel(): void {
-    if (!machine.pressed()) return;
+  function onPointerCancel(evt: Event): void {
+    const ev = evt as unknown as PointerLike;
+    const press = machine.pressed();
+    if (!press) return;
+    // Document-level and fired per pointer: a palm or a second finger being
+    // cancelled by the browser (palm rejection, a scroll or system gesture
+    // taking the touch) must not abort the tracked gesture.
+    if (typeof ev.pointerId === 'number' && ev.pointerId !== press.pointerId) return;
     revert();
     finish();
   }

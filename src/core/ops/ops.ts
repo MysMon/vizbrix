@@ -39,9 +39,6 @@ import { canonLen } from '../geometry/len';
 /* Equality                                                            */
 /* ------------------------------------------------------------------ */
 
-/** Deepest structural comparison depth; beyond it, identity decides. */
-const MAX_DEPTH = 12;
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -74,15 +71,23 @@ function sameLen(a: Len, b: Len): boolean {
  * for the `setData`/`rebaseOk` entry points), while placements, overrides and
  * the rest of an item keep it.
  *
- * Bounded by {@link MAX_DEPTH} — consumer `data` is opaque and may be cyclic,
- * and a comparison that recurses forever would take the dashboard down.
- * Past the bound the check tightens to reference identity, which can only
- * report a false INEQUALITY: the caller then treats a no-op as a change, or a
- * rebase as conflicted, and skips. Never the other way round.
+ * Unbounded in depth — a consumer's `data` payload legitimately nests as deep
+ * as it likes (chart specs routinely exceed a dozen levels), and a false
+ * inequality here is NOT harmless at every entry point: the `replaceDoc` arm
+ * backs controlled-mode echo detection, where "not equal" replaces the
+ * document and clears undo history. Cycles (only reachable through consumer
+ * `data`) are detected via the ancestor stacks and compare as NOT equal, and
+ * a key whose value is `undefined` counts as absent, matching the JSON
+ * round-trip every persisted document goes through.
  */
-function deepEqual(a: unknown, b: unknown, depth = 0, lenAware = true): boolean {
+function deepEqual(
+  a: unknown,
+  b: unknown,
+  lenAware = true,
+  stackA: unknown[] = [],
+  stackB: unknown[] = [],
+): boolean {
   if (Object.is(a, b)) return true;
-  if (depth >= MAX_DEPTH) return false;
   if (typeof a !== typeof b) {
     // The one legitimate cross-type equality: a bare px number vs `{px: n}`.
     return lenAware && isLenLike(a) && isLenLike(b) && sameLen(a, b);
@@ -91,33 +96,62 @@ function deepEqual(a: unknown, b: unknown, depth = 0, lenAware = true): boolean 
 
   const arrA = Array.isArray(a);
   if (arrA !== Array.isArray(b)) return false;
-  if (arrA) {
-    const x = a as unknown[];
-    const y = b as unknown[];
-    if (x.length !== y.length) return false;
-    for (let i = 0; i < x.length; i++) {
-      if (!deepEqual(x[i], y[i], depth + 1, lenAware)) return false;
-    }
-    return true;
-  }
-  if (!isPlainObject(a) || !isPlainObject(b)) return false;
-  if (lenAware && isLenLike(a) && isLenLike(b)) return sameLen(a, b);
+  if (!arrA && (!isPlainObject(a) || !isPlainObject(b))) return false;
+  if (!arrA && lenAware && isLenLike(a) && isLenLike(b)) return sameLen(a, b);
 
-  const objA: Record<string, unknown> = a;
-  const objB: Record<string, unknown> = b;
-  const keysA = Object.keys(objA);
-  if (keysA.length !== Object.keys(objB).length) return false;
-  for (const key of keysA) {
-    if (!Object.prototype.hasOwnProperty.call(objB, key)) return false;
-    // Below a `data` key the payload is the consumer's, not the schema's.
-    if (!deepEqual(objA[key], objB[key], depth + 1, lenAware && key !== 'data')) return false;
+  // A node revisiting one of its own ancestors is a cycle: report inequality
+  // rather than recursing forever. (A DAG that shares subtrees is fine — the
+  // stacks only hold the current ancestor chain.)
+  if (stackA.includes(a) || stackB.includes(b)) return false;
+  stackA.push(a);
+  stackB.push(b);
+  try {
+    if (arrA) {
+      const x = a as unknown[];
+      const y = b as unknown[];
+      if (x.length !== y.length) return false;
+      for (let i = 0; i < x.length; i++) {
+        if (!deepEqual(x[i], y[i], lenAware, stackA, stackB)) return false;
+      }
+      return true;
+    }
+
+    const objA: Record<string, unknown> = a as Record<string, unknown>;
+    const objB: Record<string, unknown> = b as Record<string, unknown>;
+    let countA = 0;
+    for (const key of Object.keys(objA)) {
+      if (objA[key] === undefined) continue;
+      countA++;
+      if (objB[key] === undefined) return false;
+      // Below a `data` key the payload is the consumer's, not the schema's.
+      if (!deepEqual(objA[key], objB[key], lenAware && key !== 'data', stackA, stackB)) {
+        return false;
+      }
+    }
+    let countB = 0;
+    for (const key of Object.keys(objB)) {
+      if (objB[key] !== undefined) countB++;
+    }
+    return countA === countB;
+  } finally {
+    stackA.pop();
+    stackB.pop();
   }
-  return true;
 }
 
 /** {@link deepEqual} for opaque consumer payloads: no `Len` interpretation. */
 function deepEqualData(a: unknown, b: unknown): boolean {
-  return deepEqual(a, b, 0, false);
+  return deepEqual(a, b, false);
+}
+
+/**
+ * Structural item equality, `Len`-aware outside `data`.
+ *
+ * Module-internal to the engine (not part of the public core surface): the
+ * store uses it to detect a multi-op batch that nets out to no change.
+ */
+export function itemEquals(a: unknown, b: unknown): boolean {
+  return deepEqual(a, b);
 }
 
 /** Placement equality up to `Len` canonicalization. Modes must match exactly. */

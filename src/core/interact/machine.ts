@@ -26,12 +26,13 @@ import type {
   LayoutItemBase,
   Rect,
   SnapConfig,
-  SnapEngine,
   TxResult,
   TxSource,
   VizbrixStore,
   VizbrixStrings,
 } from '../schema/types';
+import type { GestureSnapEngine } from '../snap/engine';
+import { LINE_EPS, REF_CENTER, REF_END, REF_START } from '../snap/providers';
 
 /* ------------------------------------------------------------------ */
 /* constants                                                           */
@@ -326,15 +327,25 @@ export function collisionValid(
 /* keyboard snap jump                                                  */
 /* ------------------------------------------------------------------ */
 
+/** Reference points of the moving rect, matched positionally to `REF_MASKS`. */
+const REF_BITS = [REF_START, REF_CENTER, REF_END] as const;
+/** An edge line may capture either moving edge; a centre line only the centre. */
+const EDGE_LINE = REF_START | REF_END;
+
 /**
  * Distance to the next snap candidate beyond `rect`'s edges along `axis`, in
  * the direction `dir` (+1 = toward the end edge).
  *
  * The candidate set is the same one the snap engine collects — every sibling's
  * start/centre/end plus the container's start/centre/end — read out of the very
- * same `GestureSnapshot`. It is scanned directionally here because
- * `SnapEngine.query()` is symmetric ("nearest within the threshold, either
- * side") and so cannot express "the next one that way".
+ * same `GestureSnapshot`, and each line keeps the reference-point mask its
+ * provider declares (`providers.ts`): an edge line may capture the moving start
+ * or end edge, a centre line only the moving centre. That is what keeps the
+ * stops identical to the ones pointer snapping would land on — a sibling
+ * centre must not capture a moving edge here either. It is scanned
+ * directionally here because `SnapEngine.query()` is symmetric ("nearest
+ * within the threshold, either side") and so cannot express "the next one that
+ * way".
  *
  * Returns `null` when nothing lies ahead; the caller then falls back to a plain
  * nudge so the key always does something.
@@ -349,19 +360,24 @@ export function snapJumpDelta(
   const size = axis === 'x' ? rect.w : rect.h;
   const extent = axis === 'x' ? snapshot.width : snapshot.height;
 
-  const lines: number[] = [0, extent / 2, extent];
+  const lines: number[] = [0, extent, extent / 2];
+  const masks: number[] = [EDGE_LINE, EDGE_LINE, REF_CENTER];
   for (const [id, other] of snapshot.rects) {
     if (snapshot.movingIds.has(id)) continue;
     const p = axis === 'x' ? other.x : other.y;
     const s = axis === 'x' ? other.w : other.h;
-    lines.push(p, p + s / 2, p + s);
+    lines.push(p, p + s, p + s / 2);
+    masks.push(EDGE_LINE, EDGE_LINE, REF_CENTER);
   }
 
   const refs = [pos, pos + size / 2, pos + size];
   let best: number | null = null;
-  for (const line of lines) {
-    for (const ref of refs) {
-      const delta = line - ref;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const mask = masks[i]!;
+    for (let j = 0; j < refs.length; j++) {
+      if ((mask & REF_BITS[j]!) === 0) continue;
+      const delta = line - refs[j]!;
       if (dir > 0 ? delta <= EPS : delta >= -EPS) continue;
       if (best === null || Math.abs(delta) < Math.abs(best)) best = delta;
     }
@@ -383,6 +399,29 @@ export function snapJumpDelta(
 export function copyGuides(guides: readonly Guide[]): Guide[] {
   const out: Guide[] = [];
   for (const g of guides) out.push({ axis: g.axis, at: g.at, from: g.from, to: g.to, kind: g.kind });
+  return out;
+}
+
+/**
+ * Copy the engine's pooled guides, keeping only the lines the rect actually
+ * touches with the reference point `handle` drives on that axis.
+ *
+ * The engine emits guides for the rect it was QUERIED with; folding its
+ * correction back through `resizeRect` can settle somewhere else — the aspect
+ * modifier re-derives one axis and discards that axis' correction, and a
+ * min/max limit re-clamps the pair — so a guide is shown only when the driven
+ * edge really sits on the line it claims (within `LINE_EPS`, the engine's own
+ * "same line" tolerance).
+ */
+export function satisfiedGuides(guides: readonly Guide[], rect: Rect, handle: HandleId): Guide[] {
+  const out: Guide[] = [];
+  for (const g of guides) {
+    const pos = g.axis === 'x' ? rect.x : rect.y;
+    const size = g.axis === 'x' ? rect.w : rect.h;
+    const ref = movesStart(handle, g.axis) ? pos : movesEnd(handle, g.axis) ? pos + size : null;
+    if (ref === null || Math.abs(ref - g.at) > LINE_EPS) continue;
+    out.push({ axis: g.axis, at: g.at, from: g.from, to: g.to, kind: g.kind });
+  }
   return out;
 }
 
@@ -457,6 +496,8 @@ export interface GestureSession {
 }
 
 export interface GrabState {
+  /** What the arrows drive: a move grab translates the ghost, a resize grab sizes it. */
+  kind: 'move' | 'resize';
   id: string;
   /** Rect at grab time — what Escape reverts to. */
   startRect: Rect;
@@ -522,8 +563,8 @@ export interface InteractRuntime<TData = undefined> {
   container(): HTMLElement | null;
   ownerDocument(): Document | null;
   isEdit(): boolean;
-  /** Snap engine for the current options; rebuilt when `snap` changes. */
-  engine(): SnapEngine;
+  /** Snap engine for the current options; rebuilt when `snap` changes, never mid-gesture. */
+  engine(): GestureSnapEngine;
 
   /**
    * Re-measure the container box. THE one allowed `getBoundingClientRect`, and

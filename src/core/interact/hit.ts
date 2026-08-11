@@ -21,6 +21,7 @@
  *   | `data-vzb-item="<id>"` | item root, raw (unescaped) item id              |
  *   | `data-vzb-handle="se"` | resize handle, rendered only while selected     |
  *   | `data-vzb-drag-handle` | scopes pointer drags to a sub-element           |
+ *   | `data-vzb-move`        | tap-to-place affordance rendered inside the item |
  */
 
 import type { HandleId, Rect, VizbrixStore } from '../schema/types';
@@ -202,6 +203,25 @@ export function resolvePointerTarget(
     viaDragHandle,
     element,
   };
+}
+
+/**
+ * The item id whose tap-to-place move button (`data-vzb-move`) the event
+ * ORIGINATED on, or null when it did not pass through one before its item
+ * root. An item merely containing a move button elsewhere does not count —
+ * only a press that started on the button itself is the button's own toggle.
+ */
+export function moveButtonItemId(path: readonly unknown[], container: unknown): string | null {
+  let viaMoveButton = false;
+  for (const node of path) {
+    if (node === container) return null;
+    const el = asElement(node);
+    if (!el) continue;
+    if (!viaMoveButton && el.getAttribute('data-vzb-move') !== null) viaMoveButton = true;
+    const id = el.getAttribute('data-vzb-item');
+    if (id !== null) return viaMoveButton ? id : null;
+  }
+  return null;
 }
 
 /** The item id owning an event, for the keyboard sensor. */
