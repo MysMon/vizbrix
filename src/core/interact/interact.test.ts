@@ -303,6 +303,25 @@ describe('pointer drag', () => {
     expect(rectOf(h, 'a')).toEqual(A);
   });
 
+  it("a stray pointer's cancel does not abort the tracked drag", () => {
+    const h = setup(twoItems());
+    const a = h.nodes.get('a')!;
+    down(a, 150, 150); // pointerId 1 is the tracked pointer
+    move(250, 150);
+    expect(h.store.getInteraction().phase).toBe('dragging');
+
+    // A palm or second finger gets its own pointerdown (refused while a
+    // gesture is in flight) and is then cancelled by the browser — that
+    // cancel belongs to the stray pointer, not to the tracked one.
+    down(a, 400, 400, { pointerId: 7, pointerType: 'touch' });
+    document.dispatchEvent(pointerEvent('pointercancel', { pointerId: 7, pointerType: 'touch' }));
+    expect(h.store.getInteraction().phase).toBe('dragging');
+    expect(a.style.transform).toBe('translate(100px, 0px)');
+
+    up(250, 150);
+    expect(rectOf(h, 'a').x).toBe(200);
+  });
+
   it('a drop at the origin records nothing', () => {
     const h = setup(twoItems());
     down(h.nodes.get('a')!, 150, 150);
@@ -519,6 +538,81 @@ describe('snapping', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Meta', metaKey: true }));
     expect(h.nodes.get('a')!.style.transform).toBe('translate(297px, 0px)');
   });
+
+  it('a snap change landing mid-gesture takes effect on the next gesture', () => {
+    const h = setup(twoItems()); // snap: false
+    down(h.nodes.get('a')!, 150, 150);
+    move(200, 150);
+    h.controller.setOptions({ snap: {} });
+    up(200, 150);
+    // The gesture the change landed in kept its engine to the end.
+    expect(rectOf(h, 'a').x).toBe(150);
+
+    // The next gesture runs on the new config: a's centre lands 3 px short of
+    // the container centre line and is pulled onto it.
+    down(h.nodes.get('a')!, 200, 150);
+    move(447, 150);
+    up(447, 150);
+    expect(rectOf(h, 'a').x).toBe(400);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* keyboard during a pointer gesture                                   */
+/* ------------------------------------------------------------------ */
+
+describe('keyboard during a pointer gesture', () => {
+  const press = (node: EventTarget, key: string, init: KeyboardEventInit = {}): void => {
+    node.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }));
+  };
+
+  it('layout shortcuts are inert while a pointer gesture is in flight', () => {
+    const h = setup(twoItems());
+    const a = h.nodes.get('a')!;
+
+    // A committed move first, so mid-gesture undo has something to rewrite.
+    down(a, 150, 150);
+    move(190, 150);
+    up(190, 150);
+    expect(rectOf(h, 'a').x).toBe(140);
+
+    // A press focuses the item, so keystrokes bubble through the container's
+    // keydown listener for the whole drag.
+    down(a, 190, 150);
+    move(250, 150);
+    expect(h.store.getInteraction().phase).toBe('dragging');
+
+    // Undo would rewrite the rects the frozen session started from…
+    press(a, 'z', { ctrlKey: true });
+    expect(rectOf(h, 'a').x).toBe(140);
+    // …an arrow would commit a spurious mid-gesture transaction…
+    press(a, 'ArrowRight');
+    // …and Delete would remove the item the session is still holding.
+    press(a, 'Delete');
+    expect(h.store.getItem('a')).toBeDefined();
+    expect(h.store.getInteraction().phase).toBe('dragging');
+
+    up(250, 150);
+    expect(rectOf(h, 'a').x).toBe(200);
+
+    // History holds exactly the two drags: one gesture, one transaction.
+    h.store.undo();
+    expect(rectOf(h, 'a').x).toBe(140);
+    h.store.undo();
+    expect(rectOf(h, 'a').x).toBe(100);
+    expect(h.store.canUndo()).toBe(false);
+  });
+
+  it('Escape typed inside the container still cancels the gesture', () => {
+    const h = setup(twoItems());
+    const a = h.nodes.get('a')!;
+    down(a, 150, 150);
+    move(250, 150);
+    press(a, 'Escape');
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.canUndo()).toBe(false);
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -595,6 +689,58 @@ describe('resize', () => {
       w: 400,
       h: 150,
     });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* resize snapping under modifiers                                     */
+/* ------------------------------------------------------------------ */
+
+describe('resize snapping under modifiers', () => {
+  it('Alt size-match lands the matched size exactly', () => {
+    // From the centre, one px of pointer travel grows the width by two, so the
+    // size-match correction folds at half rate: 90 wide, dragged 3 px with a
+    // 100 px sibling in range, must land at exactly 100 — not overshoot it.
+    const h = setup(
+      makeDoc([
+        item('m', 'a0', { x: 400, y: 100, w: 90, h: 150 }),
+        item('s', 'b0', { x: 100, y: 400, w: 100, h: 40 }),
+      ]),
+      { snap: {} },
+    );
+    down(h.handles.get('m')!, 490, 250);
+    move(493, 250, { altKey: true });
+
+    const state = h.store.getInteraction();
+    expect(state.phase).toBe('resizing');
+    expect(state.phase === 'resizing' && state.rect.w).toBe(100);
+
+    up(493, 250, { altKey: true });
+    expect(rectOf(h, 'm')).toEqual({ x: 395, y: 100, w: 100, h: 150 });
+  });
+
+  it('Shift aspect resize only shows guides the final rect satisfies', () => {
+    // The aspect recompute re-derives the y axis from the snapped x, dropping
+    // the y correction: the query saw bottom 322 snap to the sibling edge at
+    // 326, but the final bottom lands at 325 — that guide must not be drawn.
+    const h = setup(
+      makeDoc([
+        item('m', 'a0', { x: 100, y: 100, w: 200, h: 150 }),
+        item('c', 'c0', { x: 400, y: 500, w: 150, h: 60 }),
+        item('b', 'b0', { x: 700, y: 326, w: 100, h: 50 }),
+      ]),
+      { snap: {} },
+    );
+    down(h.handles.get('m')!, 300, 250);
+    move(396, 252, { shiftKey: true });
+
+    const state = h.store.getInteraction();
+    expect(state.phase).toBe('resizing');
+    const guides = state.phase === 'resizing' ? state.guides : [];
+    expect(guides.map((g) => `${g.axis}@${g.at}`)).toEqual(['x@400']);
+
+    up(396, 252, { shiftKey: true });
+    expect(rectOf(h, 'm')).toEqual({ x: 100, y: 100, w: 300, h: 225 });
   });
 });
 
@@ -806,6 +952,56 @@ describe('tap-to-place (SC 2.5.7)', () => {
     h.controller.beginPlace('a');
     down(h.container, 300, 200);
     expect(rectOf(h, 'a')).toEqual({ x: 300, y: 200, w: 200, h: 150 });
+    expect(h.store.getInteraction().phase).toBe('idle');
+  });
+
+  it("a tap on the armed item's own move button cancels instead of placing", () => {
+    const h = setup(twoItems());
+    const button = document.createElement('button');
+    button.setAttribute('data-vzb-move', '');
+    h.nodes.get('a')!.appendChild(button);
+    // Wired the way the adapter wires `moveButtonProps`: the delegated click
+    // toggles the session. The container's NATIVE pointerdown listener fires
+    // first — if it treated this press as a landing, the item would teleport
+    // to the button's own coordinates and the click below would re-arm
+    // instead of cancel.
+    button.addEventListener('click', () => {
+      const state = h.store.getInteraction();
+      if (state.phase === 'placing' && state.id === 'a') h.controller.cancelPlace();
+      else h.controller.beginPlace('a');
+    });
+
+    // First tap arms.
+    down(button, 110, 110);
+    up(110, 110);
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(h.store.getInteraction()).toEqual({ phase: 'placing', id: 'a' });
+
+    // Second tap on the same button: the pointerdown must NOT land the item…
+    down(button, 110, 110);
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.getInteraction()).toEqual({ phase: 'placing', id: 'a' });
+
+    // …so the click that follows cancels, as the docs promise.
+    up(110, 110);
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(h.store.getInteraction().phase).toBe('idle');
+    expect(rectOf(h, 'a')).toEqual(A);
+    expect(h.store.canUndo()).toBe(false);
+    expect(h.announcements.at(-1)?.message).toContain('canceled');
+  });
+
+  it("another item's move button is still 'anywhere in the dashboard' and lands the item", () => {
+    // The exemption is scoped to the ARMING button: only the placing item's
+    // own move button is a toggle; the rest of the container is a target.
+    const h = setup(twoItems());
+    const bButton = document.createElement('button');
+    bButton.setAttribute('data-vzb-move', '');
+    h.nodes.get('b')!.appendChild(bButton);
+    h.controller.beginPlace('a');
+
+    down(bButton, 550, 160);
+    expect(rectOf(h, 'a')).toEqual({ x: 550, y: 160, w: 200, h: 150 });
     expect(h.store.getInteraction().phase).toBe('idle');
   });
 

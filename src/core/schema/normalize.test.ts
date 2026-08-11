@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Issue, LayoutInput } from './types';
+import type { Issue, LayoutInput, Len } from './types';
 import { DEFAULT_BASE_WIDTH, defineLayout, normalize } from './normalize';
 
 const start = (offset: number, size: number) => ({ mode: 'start' as const, offset, size });
@@ -113,8 +113,23 @@ describe('normalize()', () => {
         { id: 'x', z: 'a3', x: start(0, 4), y: start(0, 1) },
       ],
     });
-    expect(doc.items.map((i) => i.id)).toEqual(['x', 'x-2', 'x-2-2', 'x-3']);
+    // Every id an item already owns is reserved before the repair runs, so the
+    // rename lands only on the duplicates: "x-2" stays with its owner.
+    expect(doc.items.map((i) => i.id)).toEqual(['x', 'x-3', 'x-2', 'x-4']);
+    expect(doc.items.find((i) => i.id === 'x-2')!.x).toEqual(start(0, 3));
     expect(new Set(doc.items.map((i) => i.id)).size).toBe(4);
+  });
+
+  it('generates an id no other item already owns', () => {
+    const doc = normalize({
+      version: 1,
+      container: { base: { width: 100 } },
+      items: [
+        { z: 'a0', x: start(0, 1), y: start(0, 1) },
+        { id: 'item-1', z: 'a1', x: start(0, 2), y: start(0, 1) },
+      ],
+    });
+    expect(doc.items.map((i) => i.id)).toEqual(['item-2', 'item-1']);
   });
 
   it('keeps opaque data by reference', () => {
@@ -325,6 +340,109 @@ describe('damaged size overrides are dropped, not repaired to 0×0', () => {
     const once = normalize(withOverride({ x: { mode: 'bogus' }, hidden: true }));
     const twice = normalize(once as unknown);
     expect(twice).toEqual(once);
+  });
+});
+
+describe('$unknown parking resolves in favour of the live document value', () => {
+  const shadowed = () => ({
+    version: 1,
+    theme: 'dark',
+    $unknown: { theme: 'light', onlyParked: true },
+    container: { base: { width: 100 } },
+    items: [
+      {
+        id: 'a',
+        z: 'a0',
+        x: start(0, 1),
+        y: start(0, 1),
+        rotation: 90,
+        $unknown: { rotation: 45 },
+      },
+    ],
+  });
+
+  it('parks the top-level value over the copy an earlier reader parked', () => {
+    const doc = normalize(shadowed());
+    expect(doc.$unknown).toEqual({ theme: 'dark', onlyParked: true });
+    expect(doc.items[0]!.$unknown).toEqual({ rotation: 90 });
+  });
+
+  it('says that the fresh value replaced a parked one', () => {
+    const issues: Issue[] = [];
+    normalize(shadowed(), issues);
+    expect(issues.find((i) => i.path === 'items[0].rotation')?.message).toContain('replaces');
+    expect(issues.find((i) => i.path === 'theme')?.message).toContain('replaces');
+  });
+
+  it('stays a fixpoint once the live value is parked (L3)', () => {
+    const once = normalize(shadowed());
+    expect(normalize(once as unknown)).toEqual(once);
+  });
+});
+
+describe('a size that is negative at every extent is clamped', () => {
+  const sized = (size: unknown) => ({
+    version: 1,
+    container: { base: { width: 1000 } },
+    items: [{ id: 'a', z: 'a0', x: { mode: 'start', offset: 10, size }, y: start(0, 1) }],
+  });
+
+  const sizeOf = (doc: { items: readonly unknown[] }): Len =>
+    (doc.items[0] as { x: { size: Len } }).x.size;
+
+  it('clamps a bare negative and the negative object forms', () => {
+    for (const size of [-50, { px: -50 }, { pct: -25 }, { pct: -10, px: -5 }]) {
+      const issues: Issue[] = [];
+      const doc = normalize(sized(size), issues);
+      expect(sizeOf(doc), JSON.stringify(size)).toBe(0);
+      expect(issues.find((i) => i.path === 'items[0].x.size')?.message).toContain('clamped to 0');
+    }
+  });
+
+  it('keeps a mixed-sign size — full width minus a gutter resolves positive', () => {
+    const issues: Issue[] = [];
+    const doc = normalize(sized({ pct: 100, px: -32 }), issues);
+    expect(sizeOf(doc)).toEqual({ pct: 100, px: -32 });
+    expect(issues).toEqual([]);
+  });
+
+  it('leaves offsets and both-mode insets negative', () => {
+    const doc = normalize({
+      version: 1,
+      container: { base: { width: 1000 } },
+      items: [
+        {
+          id: 'a',
+          z: 'a0',
+          x: { mode: 'end', offset: -20, size: 10 },
+          y: { mode: 'both', start: -5, end: -6 },
+        },
+      ],
+    });
+    expect(doc.items[0]!.x).toEqual({ mode: 'end', offset: -20, size: 10 });
+    expect(doc.items[0]!.y).toEqual({ mode: 'both', start: -5, end: -6 });
+  });
+
+  it('clamps inside a size override too, without dropping it', () => {
+    const doc = normalize({
+      version: 1,
+      container: { base: { width: 1000 }, sizes: { sm: { maxWidth: 500 } } },
+      items: [
+        {
+          id: 'a',
+          z: 'a0',
+          x: start(0, 1),
+          y: start(0, 1),
+          at: { sm: { x: { mode: 'start', offset: 0, size: -40 } } },
+        },
+      ],
+    });
+    expect(doc.items[0]!.at!.sm!.x).toEqual({ mode: 'start', offset: 0, size: 0 });
+  });
+
+  it('stays a fixpoint after the clamp (L3)', () => {
+    const once = normalize(sized(-50));
+    expect(normalize(once as unknown)).toEqual(once);
   });
 });
 

@@ -1,5 +1,5 @@
 /**
- * Undo/redo semantics matrix — marketing asset (spec §15.5).
+ * Undo/redo semantics matrix (spec §15.5).
  *
  * Every row below pins one clause of spec §8 at the STORE level, because that
  * is the altitude a consumer experiences undo at: a gesture is one entry, an

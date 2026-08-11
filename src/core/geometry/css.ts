@@ -186,10 +186,18 @@ function inner(expr: string): string {
  *
  * CSS `clamp(MIN, VAL, MAX)` is `max(MIN, min(VAL, MAX))` — the minimum wins
  * over a smaller maximum, exactly like `resolveItem`'s clamp order. Negative
- * results are clamped to zero by CSS itself for `width`/`height`.
+ * results inside math functions are clamped to zero by CSS itself for
+ * `width`/`height` — but a BARE negative literal (`width:-50px`, `width:-10%`)
+ * is a parse-time range violation the browser drops wholesale, leaving
+ * `width:auto` (shrink-to-fit) while `resolveItem` floors the size to 0. Such
+ * a literal always resolves to a floored 0 anyway, so it is emitted as `0px`.
  */
 function sizeExpr(len: Len | undefined, min: number | undefined, max: number | undefined): string {
-  const base = lenExpr(len);
+  const parts = lenParts(len);
+  const negativeLiteral =
+    (roundPct(parts.pct) === 0 && roundPx(parts.px) < 0) ||
+    (roundPx(parts.px) === 0 && roundPct(parts.pct) < 0);
+  const base = negativeLiteral ? '0px' : lenExpr(len);
   if (isNum(min) && isNum(max)) return `clamp(${px(min)}, ${base}, ${px(max)})`;
   if (isNum(min)) return `max(${px(min)}, ${base})`;
   if (isNum(max)) return `min(${px(max)}, ${base})`;
@@ -219,11 +227,12 @@ const EMPTY_AXIS: AxisEmission = { start: '0px', end: 'auto', size: '0px' };
  * | both        | `start`         | `end`     | `auto`        |
  * | center      | `50% + d − s/2` | `auto`    | `size`        |
  *
- * `both` with size limits is the one exception: `left`+`right`+`min-width` is
- * over-constrained in CSS and the ignored edge depends on the containing
- * block's direction, so the derived size is emitted explicitly instead
- * (`width: clamp(…, calc(100% − start − end), …)`), which pins the start edge
- * in any direction — the same thing `resolveItem` does.
+ * `both` never emits `left`+`right` with `width:auto`: when the insets
+ * over-constrain (start+end exceeding the width, or size limits in play) the
+ * edge CSS ignores depends on the containing block's direction, which the
+ * stylesheet does not control. The derived size is emitted explicitly instead
+ * (`width: calc(100% − start − end)`, clamped when limits exist), which pins
+ * the start edge in any direction — the same thing `resolveItem` does.
  */
 function emitAxis(
   p: AxisPlacement | undefined,
@@ -239,7 +248,6 @@ function emitAxis(
     case 'end':
       return { start: 'auto', end: lenExpr(p.offset), size: sizeExpr(p.size, min, max) };
     case 'both': {
-      if (!clamped) return { start: lenExpr(p.start), end: lenExpr(p.end), size: 'auto' };
       const s = lenParts(p.start);
       const e = lenParts(p.end);
       const derived: Len = { pct: 100 - s.pct - e.pct, px: -(s.px + e.px) };
@@ -318,11 +326,10 @@ function placementDecls(item: LayoutItemBase, config: ContainerConfig, rtl: bool
  * The `min-height` an `height: 'auto'` container needs: the lowest bottom edge
  * any item reaches at ANY cascade level, not just at the base placement.
  *
- * The container is not its own query container, so a `min-height` re-emitted
- * inside an `@container` block would never apply to it (that is also why the
- * tier-3 block's root rule is inert). The reserved height therefore has to
- * cover every level at once: a size override that pushes an item down would
- * otherwise overflow a container sized only for the base layout.
+ * One reserved height covers every level at once: a size override that pushes
+ * an item down would otherwise overflow a container sized only for the base
+ * layout, and a single conservative bound keeps the sheet small and the
+ * container from jumping in height as overrides activate.
  *
  * This is width-independent: under `'auto'` the y axis always resolves against
  * `base.height` (spec §1.6), so the only thing that varies across widths is
@@ -373,8 +380,8 @@ function rule(selector: string, decls: readonly string[], indent = ''): string {
  *                   dashboards with colliding item ids never cross-talk
  * @param zRanks     derived sparse z-index ranks, keyed by item id
  */
-export function emitStylesheet(
-  doc: LayoutDoc<never>,
+export function emitStylesheet<TData = unknown>(
+  doc: LayoutDoc<TData>,
   instanceId: string,
   zRanks: ReadonlyMap<string, number>,
 ): string {
@@ -385,24 +392,33 @@ export function emitStylesheet(
   const baseWidth = isNum(config.base?.width) ? config.base.width : 0;
 
   const root = `[data-vzb="${cssEscapeString(instanceId)}"]`;
+  const wrap = `[data-vzb-container="${cssEscapeString(instanceId)}"]`;
   const containerName = `vzb-${cssEscapeIdent(instanceId)}`;
   const itemSelector = (id: string) => `${root} [data-vzb-item="${cssEscapeString(id)}"]`;
 
   const out: string[] = [];
 
-  /* --- container ------------------------------------------------- */
-  // `isolation:isolate` guarantees the container is a stacking context in
-  // EVERY mode. Reflow mode gets one from `container-type` anyway, but scale
-  // mode does not — and derived sparse z-ranks can drift negative under
-  // repeated sendToBack, which would otherwise paint items behind the
-  // container's own background there.
+  /* --- query container + positioning root ------------------------ */
+  // Container queries resolve against the nearest ANCESTOR container — an
+  // element can never match a query on itself. The query container is
+  // therefore a dedicated WRAPPER element (`data-vzb-container`, rendered by
+  // every adapter in reflow mode) around the positioning root, so `@container`
+  // blocks below can legitimately restyle the root itself — the tier-3 stack
+  // depends on that.
+  if (!scaled) {
+    const wrapDecls = ['container-type:inline-size', `container-name:${containerName}`];
+    if (config.height === 'fill') wrapDecls.push('height:100%');
+    out.push(rule(wrap, wrapDecls));
+  }
+
+  // `isolation:isolate` guarantees the root is a stacking context in EVERY
+  // mode: derived sparse z-ranks can drift negative under repeated
+  // sendToBack, which would otherwise paint items behind the page background.
   const containerDecls = ['position:relative', 'isolation:isolate'];
   if (scaled) {
     // No container queries in scale mode: the adapter wraps a fixed base-size
     // canvas and scales it with a transform on the WRAPPER (never on items).
     containerDecls.push(`width:${px(baseWidth)}`);
-  } else {
-    containerDecls.push('container-type:inline-size', `container-name:${containerName}`);
   }
   if (config.height === 'fill') {
     containerDecls.push('height:100%');

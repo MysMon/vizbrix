@@ -30,7 +30,9 @@
  * correction of the edge(s) the handle moves — `w` moves the x start (`x +=
  * dx; w -= dx`), `e` moves the x end (`w += dx`), `se` moves both ends, and so
  * on. Axes with no moving edge get `0`. A `null` handle means "move" even when
- * `kind` says `'resize'`.
+ * `kind` says `'resize'`. When the size does not respond 1:1 to the driven
+ * edge (a from-centre resize), the caller passes the ratio as `sizeFactor` so
+ * size-match corrections stay expressed in edge px (see `GestureSnapEngine`).
  */
 
 import type {
@@ -78,13 +80,34 @@ const REF_BITS = [REF_START, REF_CENTER, REF_END] as const;
 type MutableGuide = Guide;
 
 /**
+ * The engine `createSnapEngine` returns: `SnapEngine` plus the optional
+ * `sizeFactor` a resize query passes when the size does not respond 1:1 to the
+ * driven edge. Under a from-centre resize the opposite edge mirrors the driven
+ * one, so one px of edge travel changes the size by two — the size-match
+ * provider widens its capture window to `threshold × factor` in size space and
+ * divides its correction by the factor, so the correction remains an edge
+ * delta that the caller can fold straight back into the pointer delta and land
+ * the matched size exactly. Positional candidates are unaffected: the driven
+ * edge itself always moves 1:1.
+ */
+export interface GestureSnapEngine extends SnapEngine {
+  query(
+    rect: Rect,
+    kind: 'move' | 'resize',
+    handle: HandleId | null,
+    bypass: boolean,
+    sizeFactor?: number,
+  ): SnapResult;
+}
+
+/**
  * Create a snap engine.
  *
  * @param config `false` disables snapping entirely (every query returns a zero
  * correction and no guides); `undefined` takes the defaults — sibling edges and
  * centres, equal-gap, container edges ON, grid OFF, threshold 8 screen px.
  */
-export function createSnapEngine(config?: SnapConfig | false): SnapEngine {
+export function createSnapEngine(config?: SnapConfig | false): GestureSnapEngine {
   const cfg: ResolvedSnapConfig | null = resolveSnapConfig(config);
 
   let snapshot: GestureSnapshot | null = null;
@@ -151,7 +174,13 @@ export function createSnapEngine(config?: SnapConfig | false): SnapEngine {
    * Solve one axis: fill the hit buffer, pick the winner, emit its guides.
    * Returns the correction for this axis (0 when nothing is in range).
    */
-  function solveAxis(ax: number, rect: Rect, cand: AxisCandidates | null, refMask: number): number {
+  function solveAxis(
+    ax: number,
+    rect: Rect,
+    cand: AxisCandidates | null,
+    refMask: number,
+    sizeFactor: number,
+  ): number {
     hitCount = 0;
     bestFound = false;
     bestPri = -1;
@@ -184,12 +213,18 @@ export function createSnapEngine(config?: SnapConfig | false): SnapEngine {
     /* --- sizeMatch (resize only, one moving edge on this axis) ------ */
     const isSingleEdge = refMask === REF_START || refMask === REF_END;
     if (cand && isSingleEdge && cand.sizeCount > 0) {
-      const lo = lowerBound(cand.sizeValue, cand.sizeCount, size - t);
+      /* The size changes `sizeFactor` px per px of edge travel (2 when the
+       * opposite edge mirrors the driven one), so the capture window lives in
+       * size space while the recorded delta — what the caller folds back into
+       * the pointer delta, and the line where the driven edge lands — stays an
+       * edge delta. */
+      const st = t * sizeFactor;
+      const lo = lowerBound(cand.sizeValue, cand.sizeCount, size - st);
       for (let i = lo; i < cand.sizeCount; i++) {
         const s = cand.sizeValue[i]!;
-        if (s > size + t) break;
+        if (s > size + st) break;
         /* Moving the start edge shrinks toward a fixed end, so the sign flips. */
-        const delta = refMask === REF_START ? size - s : s - size;
+        const delta = (refMask === REF_START ? size - s : s - size) / sizeFactor;
         const line = refMask === REF_START ? pos + delta : pos + size + delta;
         record(delta, line, cand.sizeFrom[i]!, cand.sizeTo[i]!, K_SIZE);
         consider(PRI_SIZE, delta);
@@ -309,7 +344,13 @@ export function createSnapEngine(config?: SnapConfig | false): SnapEngine {
       candY = collectAxis(snap, cfg, AY, moving, moving.y);
     },
 
-    query(rect: Rect, kind: 'move' | 'resize', handle: HandleId | null, bypass: boolean): SnapResult {
+    query(
+      rect: Rect,
+      kind: 'move' | 'resize',
+      handle: HandleId | null,
+      bypass: boolean,
+      sizeFactor = 1,
+    ): SnapResult {
       resetResult();
       if (bypass || !cfg || !snapshot) return result;
 
@@ -318,9 +359,10 @@ export function createSnapEngine(config?: SnapConfig | false): SnapEngine {
       const resizing = kind === 'resize' && handle !== null;
       const maskX = resizing ? handleMask(handle, AX) : REF_ALL;
       const maskY = resizing ? handleMask(handle, AY) : REF_ALL;
+      const factor = Number.isFinite(sizeFactor) && sizeFactor > 0 ? sizeFactor : 1;
 
-      result.dx = solveAxis(AX, rect, candX, maskX);
-      result.dy = solveAxis(AY, rect, candY, maskY);
+      result.dx = solveAxis(AX, rect, candX, maskX, factor);
+      result.dy = solveAxis(AY, rect, candY, maskY, factor);
       return result;
     },
 

@@ -98,10 +98,15 @@ export function VizbrixStatic<TData = undefined>(
   }
 
   return (
-    <div data-vzb={instanceId} data-vzb-mode="static" className={className} style={style}>
-      {/* Child combinators must survive: React would escape `>` in a text child. */}
-      <style data-vzb-style={instanceId} dangerouslySetInnerHTML={{ __html: css }} />
-      {shells}
+    // The wrapper is the query container (queries resolve against the nearest
+    // ANCESTOR container); the inner root is the positioning context that the
+    // `@container` blocks — size overrides and the tier-3 stack — restyle.
+    <div data-vzb-container={instanceId} className={className} style={style}>
+      <div data-vzb={instanceId} data-vzb-mode="static">
+        {/* Child combinators must survive: React would escape `>` in a text child. */}
+        <style data-vzb-style={instanceId} dangerouslySetInnerHTML={{ __html: css }} />
+        {shells}
+      </div>
     </div>
   );
 }

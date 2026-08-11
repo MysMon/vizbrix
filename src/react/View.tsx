@@ -33,7 +33,7 @@ import { StyleSheet } from './StyleSheet';
 export interface VizbrixViewProps<TData = undefined> {
   /** The document to display. Changing it replaces the rendered document. */
   layout: LayoutDoc<TData>;
-  /** Force a named container size (tests, Storybook). */
+  /** Force a named container size (tests, previews). */
   size?: string;
   instanceId?: string;
   className?: string;
@@ -90,6 +90,13 @@ export function VizbrixView<TData = undefined>(props: VizbrixViewProps<TData>): 
     renderRef.current = children as unknown as AnyItemRenderer;
   }, [children]);
 
+  // Same treatment for `getLabel` — an inline arrow must not re-render items.
+  const getLabelRef = useRef(getLabel);
+  getLabelRef.current = getLabel;
+  useEffect(() => {
+    getLabelRef.current = getLabel;
+  }, [getLabel]);
+
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [canvasEl, setCanvasEl] = useState<HTMLDivElement | null>(null);
@@ -134,23 +141,17 @@ export function VizbrixView<TData = undefined>(props: VizbrixViewProps<TData>): 
       instanceId,
       mode: 'view',
       strings,
-      getLabel,
+      getLabelRef,
       controllerRef,
       renderRef,
       renderKey,
       announceRef,
     }),
-    [store, instanceId, strings, getLabel, renderKey],
+    [store, instanceId, strings, renderKey],
   );
 
   const canvas = (
-    <div
-      ref={setCanvas}
-      data-vzb={instanceId}
-      data-vzb-mode="view"
-      className={scaled ? undefined : className}
-      style={scaled ? undefined : style}
-    >
+    <div ref={setCanvas} data-vzb={instanceId} data-vzb-mode="view">
       <StyleSheet />
       {ids.map((id) => (
         <Item key={id} id={id} />
@@ -165,7 +166,12 @@ export function VizbrixView<TData = undefined>(props: VizbrixViewProps<TData>): 
           {canvas}
         </div>
       ) : (
-        canvas
+        // The query container is a dedicated wrapper: container queries
+        // resolve against the nearest ancestor container, never the element
+        // itself, and the `@container` blocks must be able to restyle the root.
+        <div data-vzb-container={instanceId} className={className} style={style}>
+          {canvas}
+        </div>
       )}
     </VizbrixContext.Provider>
   );

@@ -353,6 +353,14 @@ export interface ApplyOptions {
   label?: Transaction['label'];
   /** Skip history (e.g. transient programmatic sync). */
   transient?: boolean;
+  /**
+   * Keep undo/redo across a `replaceDoc`. A document replacement normally
+   * clears history (it is the load/import boundary); controlled-mode
+   * reconciliation sets this so a parent adopting or transforming a commit
+   * never destroys the user's undo stack. Entries that no longer rebase
+   * against the replaced document skip per `onConflict`.
+   */
+  preserveHistory?: boolean;
 }
 
 export type Unsubscribe = () => void;
@@ -400,11 +408,25 @@ export interface VizbrixStore<TData = undefined> {
   /** Convenience builders (each = apply of one op with derived label). */
   moveItem(id: string, rect: Rect, opts?: ApplyOptions): TxResult;
   resizeItem(id: string, rect: Rect, opts?: ApplyOptions): TxResult;
-  addItem(item: LayoutItem<TData>, opts?: ApplyOptions): TxResult;
+  /**
+   * Accepts a canonical item, or the same flat px sugar `defineLayout` takes
+   * (`{ id, x, y, w, h, anchor?, data? }`, base-design-space). A missing or
+   * empty `z` gets a top-of-stack key.
+   */
+  addItem(item: LayoutItem<TData> | FlatItemInput<TData>, opts?: ApplyOptions): TxResult;
   removeItem(id: string, opts?: ApplyOptions): TxResult;
   bringToFront(id: string): TxResult;
   sendToBack(id: string): TxResult;
   setAnchor(id: string, axis: Axis, mode: AxisMode): TxResult;
+  /**
+   * Field setters. Each captures the current value as the op's `before`, so
+   * the transaction inverts correctly — hand-building the op invites a stale
+   * `before` that silently corrupts undo.
+   */
+  setHidden(id: string, hidden: boolean, opts?: ApplyOptions): TxResult;
+  setLocked(id: string, locked: boolean, opts?: ApplyOptions): TxResult;
+  setOrder(id: string, order: number | undefined, opts?: ApplyOptions): TxResult;
+  setData(id: string, data: TData, opts?: ApplyOptions): TxResult;
 
   /* history */
   undo(): TxResult;

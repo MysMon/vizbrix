@@ -18,7 +18,7 @@ import { createStore } from '../core/store/store';
 import { syncIncomingDoc } from './context';
 import { Vizbrix } from './Vizbrix';
 import { VizbrixView } from './View';
-import { useHistory, useSelection, useVizbrix } from './hooks';
+import { useHistory, useSelection, useVizbrix, useVizbrixItem } from './hooks';
 import type { HistoryApi, SelectionApi, VizbrixApi } from './hooks';
 
 class InertResizeObserver {
@@ -93,6 +93,62 @@ afterEach(() => {
 });
 
 /* ------------------------------------------------------------------ */
+
+describe('apiRef and useVizbrixItem', () => {
+  it('exposes the useVizbrix surface to chrome outside the subtree', () => {
+    const ref: { current: VizbrixApi<undefined> | null } = { current: null };
+    const { unmount } = render(
+      <Vizbrix defaultLayout={makeDoc()} mode="edit" apiRef={ref}>
+        {children}
+      </Vizbrix>,
+    );
+    expect(ref.current).not.toBeNull();
+    expect(ref.current!.isEditing).toBe(true);
+    act(() => {
+      ref.current!.store.moveItem('a', { x: 40, y: 10, w: 100, h: 50 });
+    });
+    expect(ref.current!.store.getItemView('a')!.rect.x).toBe(40);
+    unmount();
+    expect(ref.current).toBeNull();
+  });
+
+  it('useVizbrixItem tracks one item and ignores its siblings', () => {
+    let renders = 0;
+    let last: ReturnType<typeof useVizbrixItem> | null = null;
+    function Inspector(): null {
+      renders += 1;
+      last = useVizbrixItem('b');
+      return null;
+    }
+    render(
+      <Vizbrix defaultLayout={makeDoc()} mode="edit">
+        {(item) => (item.id === 'a' ? (
+          <>
+            <Probe />
+            <Inspector />
+          </>
+        ) : null)}
+      </Vizbrix>,
+    );
+    const store = probed!.api.store;
+    expect(renders).toBeGreaterThan(0);
+    expect(last!.rect!.x).toBe(200);
+
+    // Tracks its item's commits without re-rendering the item shells around it.
+    const before = renders;
+    act(() => {
+      store.moveItem('b', { x: 260, y: 10, w: 100, h: 50 });
+    });
+    expect(renders).toBeGreaterThan(before);
+    expect(last!.rect!.x).toBe(260);
+    expect(last!.isSelected).toBe(false);
+
+    act(() => {
+      store.removeItem('b');
+    });
+    expect(last!.item).toBeUndefined();
+  });
+});
 
 describe('uncontrolled mode', () => {
   it('reports every committed transaction with the new doc and the tx', () => {
@@ -184,7 +240,11 @@ describe('controlled mode', () => {
     expect(changes).toBe(1);
   });
 
-  it('rolls back when the parent does not change the prop (§1.15 rejection)', () => {
+  it('keeps a commit the parent has not adopted yet (async adoption is legal)', () => {
+    // A parent that persists first and adopts on promise resolution — or wraps
+    // adoption in a transition — must not have the drag snapped back out from
+    // under the user. The store keeps the committed document until the prop
+    // actually changes.
     const frozen = makeDoc();
     render(
       <Vizbrix layout={frozen} mode="edit" onLayoutChange={() => {}}>
@@ -197,8 +257,115 @@ describe('controlled mode', () => {
       store.moveItem('a', { x: 400, y: 10, w: 100, h: 50 });
     });
 
-    expect(store.getDoc()).toBe(frozen);
+    expect(store.getItemView('a')!.rect.x).toBe(400);
+    expect(store.canUndo()).toBe(true);
+  });
+
+  it('rolls back when the parent re-asserts a copy of the previous document', () => {
+    const frozen = makeDoc();
+    function Host({ doc }: { doc: LayoutDoc }): ReactElement {
+      return (
+        <Vizbrix layout={doc} mode="edit" onLayoutChange={() => {}}>
+          {children}
+        </Vizbrix>
+      );
+    }
+    const { rerender } = render(<Host doc={frozen} />);
+    const store = probed!.api.store;
+
+    act(() => {
+      store.moveItem('a', { x: 200, y: 10, w: 100, h: 50 });
+    });
+    act(() => {
+      store.moveItem('a', { x: 400, y: 10, w: 100, h: 50 });
+    });
+    expect(store.getItemView('a')!.rect.x).toBe(400);
+
+    // Rejecting = asserting the old document under a new identity.
+    rerender(<Host doc={{ ...frozen, items: frozen.items.map((i) => ({ ...i })) }} />);
+
     expect(store.getItemView('a')!.rect.x).toBe(0);
+  });
+
+  it('preserves undo history across a parent rejection', () => {
+    const frozen = makeDoc();
+    function Host({ doc }: { doc: LayoutDoc }): ReactElement {
+      return (
+        <Vizbrix layout={doc} mode="edit" onLayoutChange={() => {}}>
+          {children}
+        </Vizbrix>
+      );
+    }
+    const { rerender } = render(<Host doc={frozen} />);
+    const store = probed!.api.store;
+
+    act(() => {
+      store.moveItem('a', { x: 200, y: 10, w: 100, h: 50 });
+    });
+    expect(store.canUndo()).toBe(true);
+
+    rerender(<Host doc={{ ...frozen, items: frozen.items.map((i) => ({ ...i })) }} />);
+
+    // The rollback must not destroy the user's whole undo stack: a validating
+    // parent would otherwise wipe history every time its rule fires.
+    expect(store.canUndo()).toBe(true);
+  });
+
+  it('treats a deep clone with deeply nested data as an echo', () => {
+    // Chart-spec-sized payloads nest well past a dozen levels; a structural
+    // clone of them must still read as "the same document", or a cloning
+    // parent replaces the doc (and re-renders every item) on every commit.
+    let deep: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < 20; i++) deep = { nested: deep };
+    const doc = defineLayout<Record<string, unknown>>({
+      container: { base: { width: 1000 }, stackBelow: 0 },
+      items: [{ id: 'a', x: 0, y: 0, w: 100, h: 50, data: deep }],
+    });
+
+    function Host(): ReactElement {
+      const [current, setCurrent] = useState(doc);
+      return (
+        <Vizbrix
+          layout={current}
+          mode="edit"
+          onLayoutChange={(next) => setCurrent(JSON.parse(JSON.stringify(next)))}
+        >
+          {children}
+        </Vizbrix>
+      );
+    }
+
+    render(<Host />);
+    const store = probed!.api.store;
+
+    act(() => {
+      store.moveItem('a', { x: 40, y: 0, w: 100, h: 50 });
+    });
+
+    expect(store.getItemView('a')!.rect.x).toBe(40);
+    expect(store.canUndo()).toBe(true);
+  });
+
+  it('refuses to ingest an unusable controlled prop after mount', () => {
+    const good = makeDoc();
+    function Host({ doc }: { doc: LayoutDoc }): ReactElement {
+      return (
+        <Vizbrix layout={doc} mode="edit">
+          {children}
+        </Vizbrix>
+      );
+    }
+    const { rerender } = render(<Host doc={good} />);
+    const store = probed!.api.store;
+    expect(store.getOrder()).toEqual(['a', 'b']);
+
+    // A future-schema document the construction gate would refuse must be
+    // refused by the reconciliation effect too.
+    const future = { ...good, compat: 99 } as LayoutDoc;
+    rerender(<Host doc={future} />);
+
+    expect(store.getDoc().compat).not.toBe(99);
+    expect(store.getOrder()).toEqual(['a', 'b']);
   });
 
   it('adopts a document the parent transformed', () => {

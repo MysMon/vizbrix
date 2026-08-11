@@ -24,6 +24,7 @@ import type {
   AxisMode,
   AxisPlacement,
   ContainerConfig,
+  FlatItemInput,
   InteractionState,
   ItemOverride,
   ItemSnapshot,
@@ -45,10 +46,10 @@ import { canonLen } from '../geometry/len';
 import { reencodeRect } from '../geometry/reencode';
 import { degradesOnY, resolveItem } from '../geometry/resolve';
 import { isValidKey, keyBetween } from '../order/fractional';
-import { ensureCanonicalZ } from '../schema/normalize';
+import { defineItem, ensureCanonicalZ } from '../schema/normalize';
 import { createZRanker } from '../order/zrank';
 import { createHistory } from '../ops/history';
-import { affectedIds, applyOp, deriveLabel, invertOp, rebaseOk } from '../ops/ops';
+import { affectedIds, applyOp, deriveLabel, invertOp, itemEquals, rebaseOk } from '../ops/ops';
 import {
   activeSizesOf,
   buildServerViews,
@@ -141,6 +142,24 @@ function itemLevelOnly(ops: readonly Op[]): boolean {
 function placeAtSize(ops: readonly Op[]): string | undefined {
   for (const op of ops) if (op.type === 'placeAt') return op.size;
   return undefined;
+}
+
+/**
+ * Do two documents hold structurally identical item lists?
+ *
+ * Only called for item-level batches, so the container cannot have changed
+ * and items align index-by-index; untouched items are the SAME object, so
+ * the structural comparison only ever runs over the handful a batch touched.
+ */
+function netZeroBatch<T>(before: LayoutDoc<T>, next: LayoutDoc<T>): boolean {
+  const a = before?.items ?? [];
+  const b = next?.items ?? [];
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === b[i]) continue;
+    if (a[i]?.id !== b[i]?.id || !itemEquals(a[i], b[i])) return false;
+  }
+  return true;
 }
 
 /**
@@ -409,11 +428,28 @@ export function createStore<TData = undefined>(
       try {
         next = applyOp(next, op);
         applied.push(op);
-      } catch {
+      } catch (error) {
+        // The result only says WHICH ops were skipped; the reason would
+        // otherwise vanish, leaving "my apply() did nothing" undebuggable.
+        devWarn(
+          `apply: ${String((op as { type?: unknown })?.type ?? 'op')} skipped — ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
         skipped.push(op);
       }
     }
     if (applied.length === 0) return empty(skipped);
+
+    // A multi-op batch can net out to no change while rebuilding every touched
+    // item object (a hide/show pair, an api-driven do-undo sequence). Caught
+    // structurally BEFORE anything is installed: no snapshot churn, no
+    // listener fire, and — the invariant that matters — no do-nothing undo
+    // entry (§8). Single-op no-ops never get here (`applyOp` returns the same
+    // document reference, so the post-reconcile guard below catches them).
+    if (applied.length > 1 && next !== before && itemLevelOnly(applied) && netZeroBatch(before, next)) {
+      return empty(skipped);
+    }
 
     // A document replacement is the load/import boundary — the incoming
     // document has not been through createStore, so it gets the same z-key
@@ -457,8 +493,13 @@ export function createStore<TData = undefined>(
 
     // A document replacement is the load/import boundary: every recorded
     // inverse describes a document that no longer exists, so history is wiped
-    // and the replacement itself is not undoable.
-    if (replaced) history.clear();
+    // and the replacement itself is not undoable. Controlled-mode
+    // reconciliation opts out with `preserveHistory` — a parent adopting or
+    // transforming a commit is a continuation of the same session, and
+    // entries that no longer rebase skip per `onConflict` at replay time.
+    if (replaced) {
+      if (!options.preserveHistory) history.clear();
+    }
     // History is frozen in view mode (§1.16): the doc can still be driven
     // programmatically, but a read-only surface accumulates no undo entries.
     else if (!options.transient && mode === 'edit') history.push(tx);
@@ -507,7 +548,7 @@ export function createStore<TData = undefined>(
    *
    * When a named size is active the commit targets `at[innermost]` rather than
    * the base fields (§1.19) — editing at a breakpoint is editing that
-   * breakpoint, Webflow-style — and the size rides along in the undo label.
+   * breakpoint — and the size rides along in the undo label.
    */
   function placementOp(
     item: LayoutItem<TData>,
@@ -634,7 +675,15 @@ export function createStore<TData = undefined>(
       if (!usableBound(bound)) return empty();
     }
     const item = byId.get(id)!;
-    const z = side === 'front' ? keyBetween(bound, null) : keyBetween(null, bound);
+    let z: string;
+    try {
+      z = side === 'front' ? keyBetween(bound, null) : keyBetween(null, bound);
+    } catch {
+      // A valid document can hold the absolute-minimum key, below which no
+      // key exists. Same policy as an unusable bound: refuse, don't throw
+      // out of a UI gesture.
+      return empty();
+    }
     return apply([{ type: 'setZ', id, before: item.z, after: z }], {
       label: { kind: 'reorder', ids: [id] },
     });
@@ -731,6 +780,11 @@ export function createStore<TData = undefined>(
     const result = replay(tx, 'undo');
     if (result.status === 'applied') history.pushRedo(tx);
     else if (result.status === 'blocked') pushUndoPreservingRedo(tx);
+    // A fully-conflicted entry ('empty': every op skipped) is consumed without
+    // touching the document — but the STACKS changed, and canUndo/labels are
+    // read through the doc channel. Silence here would leave an enabled Undo
+    // button pointing at an entry that no longer exists.
+    else notify([], { doc: true });
     return result;
   }
 
@@ -742,6 +796,7 @@ export function createStore<TData = undefined>(
     const result = replay(tx, 'redo');
     if (result.status === 'applied') pushUndoPreservingRedo(tx);
     else if (result.status === 'blocked') history.pushRedo(tx);
+    else notify([], { doc: true });
     return result;
   }
 
@@ -846,7 +901,13 @@ export function createStore<TData = undefined>(
 
     addItem(item, options) {
       if (destroyed) return empty();
-      let next: LayoutItem<TData> = item;
+      let next: LayoutItem<TData> = item as LayoutItem<TData>;
+      // Flat authoring sugar ({ id, x:number, y, w, h, anchor? }) — the same
+      // shape defineLayout accepts — converted against the live container so
+      // callers never hand-build an AxisPlacement pair.
+      if (typeof (next as { x?: unknown })?.x === 'number') {
+        next = defineItem(next as unknown as FlatItemInput<TData>, configOf());
+      }
       if (typeof next?.z !== 'string' || next.z.length === 0) {
         const topOf = (): string | null => {
           const topId = orderIds[orderIds.length - 1];
@@ -860,7 +921,7 @@ export function createStore<TData = undefined>(
           topZ = topOf();
           if (!usableBound(topZ)) topZ = null;
         }
-        next = { ...item, z: keyBetween(topZ, null) } as LayoutItem<TData>;
+        next = { ...next, z: keyBetween(topZ, null) } as LayoutItem<TData>;
       }
       return apply([{ type: 'add', item: next as unknown as LayoutItem<never> }], {
         ...options,
@@ -916,6 +977,49 @@ export function createStore<TData = undefined>(
       if (samePlacement(pair.x, folded.x) && samePlacement(pair.y, folded.y)) return empty();
       const { op, size } = placementOp(item, pair, 'move');
       return apply([op], { label: labelFor('move', id, size) });
+    },
+
+    // Field setters. Each captures the live value as the op's `before`, so
+    // the recorded transaction inverts correctly; a hand-built op with a
+    // stale `before` would fail rebase on undo and skip.
+    setHidden(id, hidden, options) {
+      if (destroyed) return empty();
+      const item = byId.get(id);
+      if (!item) return empty();
+      return apply([{ type: 'setHidden', id, before: item.hidden === true, after: hidden === true }], {
+        ...options,
+        label: options?.label ?? { kind: 'edit', ids: [id] },
+      });
+    },
+
+    setLocked(id, locked, options) {
+      if (destroyed) return empty();
+      const item = byId.get(id);
+      if (!item) return empty();
+      return apply([{ type: 'setLocked', id, before: item.locked === true, after: locked === true }], {
+        ...options,
+        label: options?.label ?? { kind: 'edit', ids: [id] },
+      });
+    },
+
+    setOrder(id, order, options) {
+      if (destroyed) return empty();
+      const item = byId.get(id);
+      if (!item) return empty();
+      return apply([{ type: 'setOrder', id, before: item.order, after: order }], {
+        ...options,
+        label: options?.label ?? { kind: 'edit', ids: [id] },
+      });
+    },
+
+    setData(id, data, options) {
+      if (destroyed) return empty();
+      const item = byId.get(id);
+      if (!item) return empty();
+      return apply(
+        [{ type: 'setData', id, before: (item as { data?: unknown }).data, after: data }],
+        { ...options, label: options?.label ?? { kind: 'edit', ids: [id] } },
+      );
     },
 
     undo,

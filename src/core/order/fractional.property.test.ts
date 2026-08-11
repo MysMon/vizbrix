@@ -80,6 +80,20 @@ describe('keyBetween — basics', () => {
     }
   });
 
+  it('refuses (null, absolute-minimum key) with a deliberate RangeError', () => {
+    // 'A' + 26 zeros is the smallest representable key: valid, so a
+    // hand-authored document can contain it, but nothing sorts below it.
+    const floor = 'A' + '0'.repeat(26);
+    expect(isValidKey(floor)).toBe(true);
+    expect(() => keyBetween(null, floor)).toThrow(/no key space below/);
+    // The ceiling is NOT symmetric: a maximal integer key grows a suffix.
+    const ceiling = 'z' + 'z'.repeat(26);
+    expect(isValidKey(ceiling)).toBe(true);
+    const above = keyBetween(ceiling, null);
+    expect(above > ceiling).toBe(true);
+    expect(isValidKey(above)).toBe(true);
+  });
+
   it('handles the classic prefix-of-upper-bound hazard (a="a1", b="a1V")', () => {
     // Not necessarily literal internal candidates, but exercises a case
     // where the deterministic candidate is a proper prefix of the upper
@@ -168,7 +182,9 @@ describe('property: 1e5 interleaved mixed inserts maintain strict total order', 
   // needing to re-scan a materialized 1e5-element array on every op.
   const SAMPLE_BOUND = 500;
 
-  it(`seed=${SEED}`, () => {
+  // Generous timeout: ~3s alone, but slower under a fully parallel suite
+  // on small CI runners.
+  it(`seed=${SEED}`, { timeout: 30_000 }, () => {
     const rand = makeLcg(SEED);
 
     let globalMin = keyBetween(null, null);

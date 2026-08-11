@@ -22,7 +22,7 @@ never throws for any input at all.
 import { load, serialize, validate, normalize, isLoaded, SCHEMA_VERSION } from 'vizbrix/schema';
 ```
 
-`vizbrix/schema` is **8.5 KB gzip** with no React, no DOM and no store — it is what a route handler,
+`vizbrix/schema` is **~9 KB gzip** with no React, no DOM and no store — it is what a route handler,
 a migration script or a database trigger imports. The same functions are re-exported from the
 `vizbrix` core entry if you already depend on that.
 
@@ -87,8 +87,8 @@ and written back **verbatim** by `serialize()`.
   "$unknown": { "rotation": 12, "filters": ["region"] } }
 ```
 
-That is a tested law (`roundtrip.property.test.ts`, law L2): injected unknown keys survive a
-`load → serialize` round trip byte-identically. A forward-degraded document also keeps its original
+Unknown keys injected by a newer writer survive a `load → serialize` round trip
+byte-identically — that is law L2 of the round-trip guarantees below. A forward-degraded document also keeps its original
 `version` and `compat`, so this reader writes the future document back rather than downgrading it.
 One exception: `ContainerConfig` has no `$unknown` slot in the frozen schema, so unrecognized
 *container* keys are reported and dropped rather than parked.
@@ -133,7 +133,7 @@ const outcome = load(raw, [v1ToV2]);   // migrate(raw, [v1ToV2]) does the same, 
 Two properties are enforced by the runner rather than by each migration's diligence:
 
 - **Contiguity.** Steps must advance exactly one version and form an unbroken chain up to the
-  current schema version. A gap is a CI failure, not a runtime surprise.
+  current schema version. A gap is rejected up front, before any document is touched.
 - **Drop reporting (law L5).** After each step the runner diffs the key sets and reports every field
   that disappeared without the migration reporting it itself, with a path. You cannot lose a field
   silently.
@@ -177,7 +177,7 @@ damaged data you want repaired.
 
 ## The round-trip laws
 
-Property-tested in `src/core/schema/roundtrip.property.test.ts`:
+These hold for every document, however it was built:
 
 | law | statement |
 |---|---|
@@ -186,9 +186,9 @@ Property-tested in `src/core/schema/roundtrip.property.test.ts`:
 | L3 | `normalize` is idempotent |
 | L5 | every field a migration drops is reported with a path |
 
-Resolution itself is covered next door: `reencode.property.test.ts` pins
-`resolveAxis(reencodeAxis(pos, size, W, mode), W)` to within 0.5 px for widths from 1 to 10000, in
-every mode — which is what makes a saved layout mean the same thing after an edit as before it.
+Resolution carries the same kind of guarantee: resolving a re-encoded placement lands within
+0.5 px of the original for widths from 1 to 10000, in every mode — which is what makes a saved
+layout mean the same thing after an edit as before it.
 
 ## Storing widget data
 
@@ -200,5 +200,5 @@ makes anything slow. Prefer storing an id here and joining the payload from your
 ## See also
 
 [Getting started](./getting-started.md) — the save/load flow in an app ·
-[Migrating from react-grid-layout](./migrate-from-react-grid-layout.md) — `importFromRGL` returns a
+[Importing a column-grid layout](./import-from-grid.md) — `importFromGrid` returns a
 `LoadOutcome` like everything else.

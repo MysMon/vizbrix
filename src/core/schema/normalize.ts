@@ -22,11 +22,12 @@ import type {
   ItemOverride,
   LayoutDoc,
   LayoutInput,
+  LayoutItem,
   Len,
   SizeDef,
 } from './types';
 import { SCHEMA_VERSION } from './types';
-import { canonLen } from '../geometry/len';
+import { canonLen, lenParts } from '../geometry/len';
 import { reencodeAxis } from '../geometry/reencode';
 import { isValidKey, keysBetween } from '../order/fractional';
 import {
@@ -36,6 +37,7 @@ import {
   DEFAULT_BASE_WIDTH,
   DOC_KEYS,
   ITEM_KEYS,
+  LEN_KEYS,
   OVERRIDE_KEYS,
   fallbackPlacement,
   hasOwn,
@@ -66,7 +68,8 @@ const COLLISION_SET = new Set<string>(COLLISION_POLICIES);
  * - every item has a unique `id`, a non-empty `z`, and valid `x` / `y`.
  * - items are sorted ascending by `z` (ties broken by `id`, so the order is
  *   total and stable).
- * - all `Len` values are canonical (`canonLen`).
+ * - all `Len` values are canonical (`canonLen`), and no placement `size` is
+ *   negative at every container width.
  * - unknown keys at the document and item level are parked in `$unknown`.
  * - the result is a fixpoint: `normalize(normalize(d))` deep-equals
  *   `normalize(d)` (law L3).
@@ -186,6 +189,16 @@ function normalizeItems(value: unknown, out: Issue[]): unknown[] {
   const work: WorkItem[] = [];
   const usedIds = new Set<string>();
 
+  // Every id an item already carries is reserved before any repair runs. A
+  // duplicate is renamed by suffixing, and without the reservation the suffixed
+  // name could belong to an undamaged item further down the array — which would
+  // then be renamed in turn, moving an id that external state (stored
+  // selections, per-widget rows, deep links) still points at.
+  const reservedIds = new Set<string>();
+  for (const raw of value) {
+    if (isPlainObject(raw) && isNonEmptyString(raw.id)) reservedIds.add(raw.id);
+  }
+
   for (let i = 0; i < value.length; i++) {
     const path = indexPath('items', i);
     const raw: unknown = value[i];
@@ -193,7 +206,7 @@ function normalizeItems(value: unknown, out: Issue[]): unknown[] {
       out.push(issueWarn(path, 'not an object; dropped'));
       continue;
     }
-    work.push({ fields: normalizeItem(raw, path, usedIds, out), index: i });
+    work.push({ fields: normalizeItem(raw, path, usedIds, reservedIds, out), index: i });
   }
 
   fillKeys(work, out);
@@ -290,24 +303,33 @@ export function ensureCanonicalZ<T extends { id: string; z: string }>(
   return { items: next, changed: true };
 }
 
+/**
+ * @param usedIds ids already claimed by an earlier item in this pass.
+ * @param reservedIds every id carried by any item of the document, so a
+ *   generated or de-duplicated id never lands on one an item still owns.
+ */
 function normalizeItem(
   raw: Record<string, unknown>,
   path: string,
   usedIds: Set<string>,
+  reservedIds: Set<string>,
   out: Issue[],
 ): Record<string, unknown> {
   const item: Record<string, unknown> = {};
 
   /* id — unique by construction */
+  const taken = (candidate: string): boolean => usedIds.has(candidate) || reservedIds.has(candidate);
   let id = isNonEmptyString(raw.id) ? raw.id : '';
   if (id === '') {
-    id = `item-${usedIds.size + 1}`;
+    let n = usedIds.size + 1;
+    while (taken(`item-${n}`)) n++;
+    id = `item-${n}`;
     out.push(issueWarn(`${path}.id`, `missing or empty; generated "${id}"`));
   }
   if (usedIds.has(id)) {
     const original = id;
     let n = 2;
-    while (usedIds.has(`${original}-${n}`)) n++;
+    while (taken(`${original}-${n}`)) n++;
     id = `${original}-${n}`;
     out.push(issueWarn(`${path}.id`, `duplicate id "${original}"; renamed to "${id}"`));
   }
@@ -486,12 +508,30 @@ function normalizePlacement(value: unknown, path: string, out: Issue[]): AxisPla
   const fields = placementFields(mode);
   const placement: Record<string, unknown> = { mode };
   for (const field of fields) {
-    placement[field] = normalizeLen(value[field], `${path}.${field}`, out);
+    const len = normalizeLen(value[field], `${path}.${field}`, out);
+    placement[field] = field === 'size' ? clampSize(len, `${path}.${field}`, out) : len;
   }
   for (const key of unknownKeysOf(value, ['mode', ...fields])) {
     out.push(issueWarn(`${path}.${key}`, `not used by mode '${mode}'; dropped`));
   }
   return placement as unknown as AxisPlacement;
+}
+
+/**
+ * Floors a `size` term that is negative at every container width, the same rule
+ * `minW`/`maxW` obey. Only `size` is subject to it: offsets and the `both`
+ * insets are legitimately negative (an item hanging past an edge).
+ *
+ * A `Len` is affine, so its sign is settled for the whole width range only when
+ * both terms agree. `{ pct: 100, px: -32 }` — full width minus a gutter — is an
+ * authoring idiom that resolves positive and is left alone; the resolver floors
+ * whatever a mixed-sign term comes to at the width where it applies.
+ */
+function clampSize(len: Len, path: string, out: Issue[]): Len {
+  const { pct, px } = lenParts(len);
+  if (pct > 0 || px > 0 || (pct === 0 && px === 0)) return len;
+  out.push(issueWarn(path, 'negative at every container extent; clamped to 0'));
+  return 0;
 }
 
 function normalizeLen(value: unknown, path: string, out: Issue[]): Len {
@@ -502,7 +542,7 @@ function normalizeLen(value: unknown, path: string, out: Issue[]): Len {
     else if (value.pct !== undefined) out.push(issueWarn(`${path}.pct`, 'not a finite number; dropped'));
     if (isFiniteNumber(value.px)) len.px = value.px;
     else if (value.px !== undefined) out.push(issueWarn(`${path}.px`, 'not a finite number; dropped'));
-    for (const key of unknownKeysOf(value, ['pct', 'px'])) {
+    for (const key of unknownKeysOf(value, LEN_KEYS)) {
       out.push(issueWarn(`${path}.${key}`, 'unknown key in a length; dropped'));
     }
     return canonLen(len);
@@ -597,9 +637,11 @@ function sortByKey(work: WorkItem[]): void {
 
 /**
  * Moves unrecognized own keys into `$unknown`, merging with any `$unknown`
- * already present (existing entries win — they were parked by an earlier
- * reader and must not be clobbered). Values are copied by reference, so a
- * cyclic payload is never traversed.
+ * already present. A key carried by both wins at the top level: that is where
+ * the writer put the live value, while the `$unknown` copy is what an older
+ * reader parked before the key had a meaning — keeping the parked copy would
+ * revert the edit and then persist the revert. Values are copied by reference,
+ * so a cyclic payload is never traversed.
  */
 function parkUnknown(
   src: Record<string, unknown>,
@@ -630,10 +672,15 @@ function parkUnknown(
   for (const key of extras) {
     parked[key] = src[key];
     out.push(
-      issueWarn(path === '' ? key : `${path}.${key}`, `unknown ${what} key; parked in $unknown`),
+      issueWarn(
+        path === '' ? key : `${path}.${key}`,
+        existing !== undefined && hasOwn(existing, key)
+          ? `unknown ${what} key; parked in $unknown, where it replaces a value an earlier reader parked`
+          : `unknown ${what} key; parked in $unknown`,
+      ),
     );
   }
-  const merged = { ...parked, ...(existing ?? {}) };
+  const merged = { ...(existing ?? {}), ...parked };
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
@@ -784,4 +831,27 @@ function num(value: unknown, path: string, out: Issue[]): number {
   if (isFiniteNumber(value)) return value;
   out.push(issueWarn(path, 'not a finite number; used 0'));
   return 0;
+}
+
+/**
+ * Convert ONE flat-sugar item (`{ id, x, y, w, h, anchor?, … }`) into a
+ * canonical {@link LayoutItem} against an existing container config — the same
+ * conversion {@link defineLayout} applies, for adding an item to a live
+ * dashboard. The px numbers are base-design-space.
+ *
+ * The returned item carries an EMPTY `z`: hand it to `store.addItem`, which
+ * assigns a top-of-stack key (a fixed z here would land the new item at an
+ * arbitrary depth).
+ */
+export function defineItem<TData = undefined>(
+  flat: FlatItemInput<TData>,
+  container: ContainerConfig,
+  issues?: Issue[],
+): LayoutItem<TData> {
+  const doc = defineLayout<TData>(
+    { container: container as LayoutInput<TData>['container'], items: [flat] } as LayoutInput<TData>,
+    issues,
+  );
+  const item = doc.items[0]!;
+  return { ...item, z: '' };
 }

@@ -52,6 +52,10 @@ export const MIGRATIONS: MigrationRegistry = [];
  * `target`. Asserted by a test (and therefore in CI) so a missing step can
  * never ship.
  *
+ * An empty registry is sound only while `target` is the first version: past
+ * that it is the very shape the check exists to catch — a schema bump whose
+ * migration was never written, which turns every persisted document `invalid`.
+ *
  * @returns a list of human-readable problems; empty means the chain is sound.
  */
 export function checkRegistry(
@@ -59,7 +63,10 @@ export function checkRegistry(
   target: number = SCHEMA_VERSION,
 ): string[] {
   const problems: string[] = [];
-  if (registry.length === 0) return problems;
+  if (registry.length === 0) {
+    if (target > 1) problems.push(`registry is empty but the current schema is v${target}`);
+    return problems;
+  }
 
   const seen = new Set<number>();
   for (const m of registry) {
@@ -77,11 +84,17 @@ export function checkRegistry(
   }
 
   const froms = [...seen].sort((a, b) => a - b);
-  const lowest = froms[0]!;
+  const lowest = froms[0];
+  const highest = froms[froms.length - 1];
+  if (lowest === undefined || highest === undefined) {
+    // Every entry failed the integer check above, so there is no version to
+    // reason about; naming one here would report an invented number.
+    problems.push(`no usable migration step; the chain cannot reach v${target}`);
+    return problems;
+  }
   for (let v = lowest; v < target; v++) {
     if (!seen.has(v)) problems.push(`missing migration from version ${v} (chain must reach v${target})`);
   }
-  const highest = froms[froms.length - 1]!;
   if (highest + 1 !== target) {
     problems.push(`chain ends at v${highest + 1} but the current schema is v${target}`);
   }
@@ -122,14 +135,24 @@ export function planMigration(
 const MAX_DIFF_DEPTH = 12;
 
 /**
+ * Suffix marking a subtree the walk stopped short of. The path it decorates is
+ * where the diff gave up, not a field that was dropped.
+ */
+const TRUNCATED = '…';
+
+/**
  * Key-set diff used to enforce law L5: every field present in `before` but
  * absent from `after` must surface as an {@link Issue} with a path.
  *
- * Walks plain objects and arrays only (opaque leaves are compared by
- * presence, not by value) and is depth-limited, so a cyclic or pathological
- * payload cannot hang the loader.
+ * Walks plain objects and arrays only (opaque leaves are compared by presence,
+ * not by value) and is depth-limited, so a cyclic or pathological payload
+ * cannot hang the loader. Consumer `data` is opaque and may nest past that
+ * limit, so a subtree the walk did not reach the bottom of is reported as a
+ * path ending in {@link TRUNCATED} — an incomplete audit says so rather than
+ * reading as "nothing was dropped".
  *
- * @returns dropped paths in the `items[0].x.offset` form, sorted.
+ * @returns dropped paths in the `items[0].x.offset` form, plus any truncation
+ * markers, sorted.
  */
 export function diffKeyPaths(before: unknown, after: unknown, base = ''): string[] {
   const dropped: string[] = [];
@@ -138,8 +161,20 @@ export function diffKeyPaths(before: unknown, after: unknown, base = ''): string
   return dropped;
 }
 
+/** True for a path {@link diffKeyPaths} could not compare to the bottom. */
+function isTruncated(path: string): boolean {
+  return path.endsWith(TRUNCATED);
+}
+
 function walk(before: unknown, after: unknown, path: string, depth: number, out: string[]): void {
-  if (depth > MAX_DIFF_DEPTH) return;
+  // Same reference, same key set: nothing below can have been dropped, and a
+  // payload the step passed through untouched is never walked at all.
+  if (before === after) return;
+
+  if (depth > MAX_DIFF_DEPTH) {
+    if (isPlainObject(before) || Array.isArray(before)) out.push(`${path}${TRUNCATED}`);
+    return;
+  }
 
   if (Array.isArray(before)) {
     if (!Array.isArray(after)) {
@@ -264,6 +299,10 @@ export function migrate<TData = undefined>(
  * Runs the plan, stamping the version after each step and auto-reporting any
  * key the step dropped without reporting it itself. This is what makes L5 a
  * property of the pipeline instead of a convention each migration must honor.
+ *
+ * A payload nested deeper than the diff walks is reported too, as the point the
+ * audit stopped at — the caller learns that the drop report is incomplete there
+ * instead of reading silence as an all-clear.
  */
 function runChain(
   raw: Record<string, unknown>,
@@ -284,7 +323,9 @@ function runChain(
       issues.push(
         issueWarn(
           path,
-          `dropped by migration v${step.from}→v${step.to}${step.describe ? ` (${step.describe})` : ''}`,
+          isTruncated(path)
+            ? `nested deeper than ${MAX_DIFF_DEPTH} levels; fields dropped below this point are not reported`
+            : `dropped by migration v${step.from}→v${step.to}${step.describe ? ` (${step.describe})` : ''}`,
         ),
       );
     }

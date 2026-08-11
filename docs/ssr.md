@@ -1,6 +1,6 @@
 # SSR and React Server Components
 
-"Does it break my Next app" is the question. The answer is no, and the reason is structural rather
+"Does it break my server-rendered app" is the question. The answer is no, and the reason is structural rather
 than careful: a position in vizbrix is an affine expression in the container extent (`a·W + b`), and
 every affine expression is a CSS `calc(P% + Xpx)`. So the whole layout — including responsive
 behaviour — compiles to a stylesheet. The server never needs to know how wide the container is.
@@ -13,12 +13,12 @@ until the browser has laid the page out. That is why they hydrate first and posi
 | Entry | Client JS | Use it for |
 |---|---|---|
 | `vizbrix/react/static` | **none** | RSC, static export, email/PDF pipelines, marketing pages |
-| `vizbrix/react/view` | 13.5 KB | a saved dashboard the user reads but does not edit |
-| `vizbrix/react` | 26.8 KB | the editor |
+| `vizbrix/react/view` | ~18 KB | a saved dashboard the user reads but does not edit |
+| `vizbrix/react` | ~33 KB | the editor |
 
 `vizbrix/react` and `vizbrix/react/view` carry a `"use client"` banner: they are client components
 that still server-render and hydrate normally. `vizbrix/react/static` carries no banner, no hooks,
-no state, no effects and no event handlers — a test greps its own source text to keep it that way.
+no state, no effects and no event handlers.
 
 ## Zero-JavaScript rendering
 
@@ -94,8 +94,7 @@ SSR-safe.
 
 The store is created inside a `useState` initializer, every subscription and observer lives in a
 symmetric effect, and no store is assigned to a ref during render. React 18/19 StrictMode
-double-mounting leaves exactly one live store, one controller and one overlay — tested, including
-the render-count claim.
+double-mounting leaves exactly one live store, one controller and one overlay.
 
 ## The `container-type` caveat
 

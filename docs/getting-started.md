@@ -12,7 +12,7 @@ Entry points, so you import only what you ship:
 
 | Import | Contains |
 |---|---|
-| `vizbrix` | the framework-agnostic core: schema, geometry, store, ops, snap, RGL import |
+| `vizbrix` | the framework-agnostic core: schema, geometry, store, ops, snap, grid import |
 | `vizbrix/react` | `<Vizbrix>` — the editor |
 | `vizbrix/react/view` | `<VizbrixView>` — read-only, no sensors, no history |
 | `vizbrix/react/static` | `<VizbrixStatic>` — RSC-safe, no client JavaScript |
@@ -111,9 +111,11 @@ argument is the transaction (`{ label, ops, source, actor? }`); it is never stam
 document. Cancelled gestures and drops back at the origin commit nothing and fire nothing.
 
 In controlled mode the commit lands in the store first and is reported afterwards, so a slow parent
-cannot stutter a drag. If the parent leaves the prop completely untouched after a commit, that is
-read as a rejection and the store rolls back. A parent that *transforms* the document (snapping to
-its own rules, stripping a field) is still honoured — only "no change at all" means "no".
+cannot stutter a drag. Whatever you pass next is honoured: pass the document you received — or a
+transform of it (snapping to your own rules, stripping a field) — to accept, and undo history
+survives; pass a copy of the *previous* document to reject and roll the commit back. Adopting
+asynchronously (`await save(next); setDoc(next)`, or inside a transition) is fine — the store keeps
+the committed document until the prop changes.
 
 ## Saving and loading
 
@@ -169,7 +171,13 @@ Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z already work on the container in edit mode — d
 handler for them.
 
 `useVizbrix().store` is the full engine API: `moveItem`, `resizeItem`, `addItem`, `removeItem`,
-`bringToFront`, `sendToBack`, `setAnchor`, `apply(ops)`, plus the subscription channels.
+`bringToFront`, `sendToBack`, `setAnchor`, `setHidden`, `setLocked`, `setOrder`, `setData`,
+`apply(ops)`, plus the subscription channels. `addItem` takes the same flat sugar `defineLayout`
+does — `store.addItem({ id: 'kpi', x: 40, y: 40, w: 300, h: 200 })` lands the new item on top.
+
+For chrome that lives *outside* the dashboard subtree — an app toolbar, a command palette — the
+`apiRef` prop exposes the same API through a ref. Inside the subtree, `useVizbrixItem(id)`
+subscribes a panel to one item's committed state without re-rendering on anything else.
 
 ## Snapping
 
@@ -196,4 +204,4 @@ layout.
 
 [Responsive layout](./responsive.md) · [Accessibility](./accessibility.md) ·
 [SSR & RSC](./ssr.md) · [Persistence](./persistence.md) ·
-[Migrating from react-grid-layout](./migrate-from-react-grid-layout.md)
+[Importing a column-grid layout](./import-from-grid.md)

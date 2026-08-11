@@ -7,6 +7,33 @@ on:
 
 jobs:
   check:
+    name: check (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+      - name: Check entry sizes against budgets
+        run: node scripts/check-entry-sizes.mjs
+      - name: Pack, install, and resolve every published subpath
+        run: node scripts/smoke-pack.mjs
+
+  react-18:
+    name: tests against React 18
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,15 +45,29 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm lint
+      - name: Pin React 18
+        run: pnpm add -D react@^18.3.1 react-dom@^18.3.1 @types/react@^18 @types/react-dom@^18
       - run: pnpm test
+
+  playground:
+    name: playground builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # The playground aliases every vizbrix import to ../../src, so its
+      # typecheck resolves 'react' types for those files from the ROOT
+      # node_modules — install both workspaces.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
+        working-directory: examples/playground
+      - run: pnpm typecheck
+        working-directory: examples/playground
       - run: pnpm build
-      - name: Report entry sizes (gzip, bundled+minified)
-        run: |
-          for e in index react/index react/view react/static schema; do
-            s=$(npx esbuild dist/$e.js --bundle --minify --format=esm \
-              --external:react --external:react-dom --external:react/jsx-runtime \
-              | gzip -9 | wc -c)
-            printf "%-14s %6.1f KB gzip\n" "$e" "$(echo "$s/1024" | bc -l)"
-          done
+        working-directory: examples/playground

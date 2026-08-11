@@ -90,5 +90,5 @@ export { fromMessages } from './a11y/announce';
 
 /* ---------------- interop ---------------- */
 
-export { importFromRGL } from './convert/rgl';
-export type { RGLImportOptions, RGLLayoutItem, RGLResponsiveLayouts } from './convert/rgl';
+export { importFromGrid } from './convert/grid';
+export type { GridImportOptions, GridCell, GridResponsiveLayouts } from './convert/grid';

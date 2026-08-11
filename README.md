@@ -17,21 +17,18 @@ stay sensible when the container resizes.
 
 ## Why
 
-Every mainstream dashboard-layout library stores position as **integer grid-cell coordinates**.
-[`react-grid-layout`](https://github.com/react-grid-layout/react-grid-layout) and
-[`gridstack.js`](https://github.com/gridstack/gridstack.js) are excellent, mature, widely deployed
-column engines — and in both, `x, y, w, h` mean *columns and rows*. That is not a styling default:
-it is the storage model, the collision model and the persistence format at once. So free placement
-is not reachable by configuration. The "free" modes in the ecosystem are flags that *switch off*
-the engine's core behaviour rather than express a different model — gridstack's `float: true` skips
-compaction but still snaps to cells; RGL's `allowOverlap` gives up collision handling to fake
-free-form (Apache Superset ships exactly that trade to get "free-form" dashboards).
+Dashboard layout tools usually come in one of two shapes, and both make free placement a
+second-class citizen.
 
-The other half of the ecosystem does real free placement and ships no dashboard semantics.
-[interact.js](https://interactjs.io/) and [react-moveable](https://github.com/daybrush/moveable)
-do arbitrary pixel transforms beautifully, and offer no collision policy, no persistence schema, no
-responsive strategy and no accessibility. Teams hand-assemble them into canvas editors — a DIY
-pattern, not a product.
+**Column-grid engines** store position as integer cell coordinates: `x, y, w, h` mean *columns and
+rows*. That is not a styling default — it is the storage model, the collision model and the
+persistence format at once, so free placement is not reachable by configuration. The "free" modes
+such engines offer are flags that *switch off* core behaviour (skip compaction, give up collision
+handling) rather than express a different model.
+
+**Freeform transform layers** do arbitrary pixel placement beautifully — and ship no dashboard
+semantics: no collision policy, no persistence schema, no responsive strategy, no accessibility.
+Teams hand-assemble them into canvas editors.
 
 **vizbrix is the middle.** Positions persist as continuous, resolution-independent *expressions*;
 a 12-column grid is one snap provider among several, toggled at interaction time and never baked
@@ -49,8 +46,8 @@ The one-line version: **free placement that reflows, not free placement that shr
 npm install vizbrix      # pnpm add vizbrix · yarn add vizbrix
 ```
 
-React 18 or 19 is an **optional** peer dependency — the core engine has no React import at all
-(CI enforces it), so a Vue/Svelte/vanilla adapter needs nothing but the public core surface.
+React 18 or 19 is an **optional** peer dependency — the core engine has no React dependency at
+all, so a Vue/Svelte/vanilla adapter needs nothing but the public core surface.
 
 ## 60 seconds
 
@@ -90,12 +87,12 @@ the new document and the transaction that produced it.
 Read-only is a different entry point, not a prop:
 
 ```tsx
-import { VizbrixView } from 'vizbrix/react/view';   // 13.5 KB — no sensors, no history
+import { VizbrixView } from 'vizbrix/react/view';   // no sensors, no history
 <VizbrixView layout={doc}>{(item) => <Widget id={item.id} />}</VizbrixView>
 ```
 
 ```tsx
-import { VizbrixStatic } from 'vizbrix/react/static'; // 4.2 KB — RSC-safe, no "use client"
+import { VizbrixStatic } from 'vizbrix/react/static'; // RSC-safe, no "use client"
 <VizbrixStatic layout={doc}>{(item) => <Widget id={item.id} />}</VizbrixStatic>
 ```
 
@@ -119,18 +116,15 @@ import { VizbrixStatic } from 'vizbrix/react/static'; // 4.2 KB — RSC-safe, no
 - **SSR-correct by construction.** Every placement compiles to static CSS (`left: calc(50% + 12px)`,
   `inset`, `@container (max-width: …)`), so the first paint is right with **zero JavaScript** and no
   measured width. `vizbrix/react/static` is a real React Server Component entry — no `"use client"`
-  banner, no hooks, no effects, no event handlers, enforced by a test that greps its own source.
-  [SSR guide →](./docs/ssr.md)
+  banner, no hooks, no effects, no event handlers. [SSR guide →](./docs/ssr.md)
 
 - **Dragging one widget never re-renders another.** Layout lives in an external store with per-item
   channels; a drag frame touches the dragged node's `transform` and the overlay's guide lines, both
-  imperatively. The claim is measured, not asserted: `src/react/render-count.test.tsx` drags one of
-  **200 items across 500 frames and asserts 0 sibling renders, 0 renders for the dragged item, and
-  exactly 1 render at commit** — under StrictMode too. There is no compaction pass, so the O(n²)
-  class of layout bug does not exist here.
+  imperatively — zero sibling re-renders during a drag, exactly one item render at commit, under
+  StrictMode too. There is no compaction pass, so the O(n²) class of layout bug does not exist here.
 
-- **Accessible, not "accessible later".** Full keyboard placement (grab/nudge/snap-jump/cancel/
-  z-order), `role="button"` + `aria-roledescription` + off-screen instructions, two live regions
+- **Accessible, not "accessible later".** Full keyboard placement (grab/nudge/resize/snap-jump/
+  cancel/z-order), `role="button"` + `aria-roledescription` + off-screen instructions, two live regions
   (assertive for gesture transitions, polite for position status), and a **tap-to-place** affordance
   that satisfies **WCAG 2.2 SC 2.5.7 (Dragging Movements, AA)** — every drag has a single-pointer,
   non-drag alternative. English is built in, Japanese ships as `vizbrix/locales/ja`, and strings are
@@ -149,10 +143,11 @@ import { VizbrixStatic } from 'vizbrix/react/static'; // 4.2 KB — RSC-safe, no
   cancelled or no-op drag. The ops are CRDT-shaped (fractional z-index keys, per-actor
   transactions), which is why multiplayer will be an integration guide rather than a rewrite.
 
-- **A migration path off react-grid-layout.** `importFromRGL(layouts, { cols, rowHeight })` converts
-  a single layout or a whole `{ lg, md, sm, … }` responsive set, inferring an anchor per item from
-  its relationship to the grid. It is a one-way converter, deliberately not a compatibility shim.
-  [Migration guide →](./docs/migrate-from-react-grid-layout.md)
+- **An import path from column grids.** `importFromGrid(layouts, { cols, rowHeight })` converts
+  the common cell-based dashboard format — a single layout or a whole `{ lg, md, sm, … }`
+  responsive set — inferring an anchor per item from its relationship to the grid. It is a one-way
+  converter, deliberately not a compatibility shim.
+  [Import guide →](./docs/import-from-grid.md)
 
 - **Zero runtime dependencies. MIT. TypeScript source, bundled types.**
 
@@ -209,53 +204,48 @@ ones. Geometry is byte-identical between modes, so toggling `mode="edit"` cannot
 ```
 
 In controlled mode the commit lands in the store **first** and is reported afterwards, so a slow
-parent can never stutter a drag. If the parent leaves the prop untouched after a commit, that is
-read as a rejection and the store rolls back — a parent that transforms the document is still free
-to store whatever it likes.
+parent can never stutter a drag. Whatever you pass next is honoured: pass the document you received
+(or any transform of it) to accept — undo history survives, and a structural echo does not touch
+the store — or pass a copy of the *previous* document to reject and roll the commit back. Adopting
+asynchronously (after an , inside a transition) is fine: the store keeps the committed
+document until the prop changes.
 
 ---
 
-## Comparison
+## Where vizbrix fits
 
-| | **vizbrix** | react-grid-layout | gridstack.js | interact.js / moveable |
-|---|---|---|---|---|
-| Storage model | affine expressions (`a·W + b`) per axis | integer grid cells (`x,y,w,h`) | integer grid cells | none — you own it |
-| Free placement | native model | via `allowOverlap` (disables collision handling) | via `float: true` (still cell-snapped) | native |
-| Snapping | interaction layer: siblings, centres, equal gaps, container edges, optional grid | the grid itself | the grid itself | bring your own |
-| Responsive strategy | per-item anchors + container-query cascade + deterministic stack | one authored layout array per breakpoint | one layout per column count | none |
-| SSR / first paint | static CSS, correct with zero JS; RSC entry | needs the measured container width before a breakpoint can be chosen | needs the DOM | n/a |
-| Accessibility | keyboard placement, live regions, WCAG 2.2 SC 2.5.7 tap-to-place, en + ja | not part of the documented API | not part of the documented API | not part of the documented API |
-| Undo / redo | built in, inverse ops, one gesture = one entry | app's job | app's job | app's job |
-| Persistence versioning | `{version, compat}`, migration chain, `$unknown` parking, `load()` never throws | plain array, no version field | `save()`/`load()` JSON, no version field | n/a |
-| Runtime dependencies | **0** | 6 | 0 | 0 |
-| Bundle (gzip) | 26.8 KB editor · 13.5 KB view · 4.2 KB static | 22.8 KB | varies by build | varies by build |
-| License | MIT | MIT | MIT | MIT |
+| | **vizbrix** | column-grid engines | freeform transform layers |
+|---|---|---|---|
+| Storage model | affine expressions (`a·W + b`) per axis | integer grid cells (`x,y,w,h`) | none — you own it |
+| Free placement | native model | a flag that disables core behaviour | native |
+| Snapping | interaction layer: siblings, centres, equal gaps, container edges, optional grid | the grid itself | bring your own |
+| Responsive strategy | per-item anchors + container-query cascade + deterministic stack | one authored layout per breakpoint / column count | none |
+| SSR / first paint | static CSS, correct with zero JS; RSC entry | needs a measured width before a breakpoint can be chosen | n/a |
+| Accessibility | keyboard placement, live regions, WCAG 2.2 SC 2.5.7 tap-to-place, en + ja | typically not part of the API | typically not part of the API |
+| Undo / redo | built in, inverse ops, one gesture = one entry | app's job | app's job |
+| Persistence versioning | `{version, compat}`, migration chain, `$unknown` parking, `load()` never throws | usually an unversioned array | n/a |
 
-Numbers for other projects are taken from their own published packages and issue trackers at the
-time of writing; they move, and all four are good libraries doing something different on purpose.
-If you want a 12-column dashboard with compaction, react-grid-layout is a better answer than
-vizbrix. Reach for vizbrix when the grid is the thing that keeps getting in the way.
+Column grids and transform layers are both good answers to different questions. If you want a
+12-column dashboard with compaction, use a column-grid engine. Reach for vizbrix when the grid is
+the thing that keeps getting in the way.
 
 ## Size
 
 Measured per real entry point — bundled, minified, gzipped, React externalized. Nothing here is a
-prop-gated dynamic import: what you import is what you ship.
+prop-gated dynamic import: what you import is what you ship. CI reports these numbers on every run.
 
 | Entry | gzip | What it is |
 |---|---|---|
-| `vizbrix/react/static` | **4.2 KB** | RSC-safe renderer; no client JS at all |
-| `vizbrix/schema` | **8.5 KB** | types + validate/load/migrate/serialize, for servers |
-| `vizbrix/react/view` | **13.5 KB** | read-only dashboard, no sensors or history |
-| `vizbrix/react` | **26.8 KB** | the full editor: snapping, undo/redo, a11y, responsive |
-| `vizbrix` | **28.9 KB** | the whole framework-agnostic core |
+| `vizbrix/react/static` | **~4 KB** | RSC-safe renderer; no client JS at all |
+| `vizbrix/schema` | **~9 KB** | types + validate/load/migrate/serialize, for servers |
+| `vizbrix/react/view` | **~18 KB** | read-only dashboard, no sensors or history |
+| `vizbrix/react` | **~33 KB** | the full editor: snapping, undo/redo, a11y, responsive |
+| `vizbrix` | **~32 KB** | the whole framework-agnostic core |
 
-Read honestly: the editor entry is *bigger* than react-grid-layout's 22.8 KB — and it also contains
-the snap engine, undo/redo, the accessibility layer, the responsive cascade and versioned
-persistence, which RGL leaves to your app, plus six fewer dependencies. For the case most people
-actually deploy — a saved dashboard rendered read-only in a customer-facing app — the comparison is
-13.5 KB, or 4.2 KB with no client JavaScript on the page.
-
-CI reports these numbers on every run.
+The editor entry carries the snap engine, undo/redo, the accessibility layer, the responsive
+cascade and versioned persistence. For the case most people actually deploy — a saved dashboard
+rendered read-only in a customer-facing app — the cost is the view entry, or the static entry with
+no client JavaScript on the page.
 
 ## TypeScript
 
@@ -292,38 +282,34 @@ pnpm dev
 
 Said in writing, so you can plan around them. vizbrix v0.1 does **not** ship:
 
-1. **Charts or data-viz components.** Widget *contents* are yours (Tremor, Recharts, anything).
-   Shipping charts would make this a chart kit with a layout feature.
+1. **Charts or data-viz components.** Widget *contents* are yours — bring whatever charting stack
+   you already use. Shipping charts would make this a chart kit with a layout feature.
 2. **Infinite canvas / zoom + pan camera.** Dashboards live in a bounded container. The coordinate
    space stays camera-ready; no camera is shipped.
 3. **Realtime multiplayer or a sync server.** Ops and z-keys are CRDT-shaped; multiplayer will be an
-   integration guide (Yjs/Loro), not a hosted feature.
-4. **Non-React adapters.** The core is framework-agnostic and CI-enforced to stay that way, but only
-   the React adapter is shipped today.
-5. **Docking, tabs, nested split workspaces.** dockview, golden-layout and react-mosaic own
-   IDE-style tiling; different product.
-6. **Page-builder / component-tree editing.** Puck and craft.js own that.
+   integration guide for the CRDT library of your choice, not a hosted feature.
+4. **Non-React adapters.** The core is framework-agnostic and stays that way, but only the React
+   adapter is shipped today.
+5. **Docking, tabs, nested split workspaces.** IDE-style tiling is a different product.
+6. **Page-builder / component-tree editing.** Also a different product.
 7. **A theming or styling system.** Headless plus minimal structural CSS. Style the `data-vzb-item`,
    `data-selected`, `data-dragging`, `data-locked` hooks with your own CSS.
-8. **A react-grid-layout drop-in shim.** `importFromRGL` is a one-way converter; a shim would leak
+8. **A column-grid drop-in shim.** `importFromGrid` is a one-way converter; a shim would leak
    the cell model back into the core.
 9. **A constraint solver, editor chrome/toolbars, widget virtualization, and `push` collision.**
-   `push` is compaction under another name — the O(n²) class we advertise not having. The schema is
-   deliberately a strict subset of a linear-constraint system so a solver can arrive later as an
-   additive escape hatch without changing the persisted format.
+   `push` is compaction under another name — the O(n²) class this library exists to avoid. The
+   schema is deliberately a strict subset of a linear-constraint system so a solver can arrive
+   later as an additive escape hatch without changing the persisted format.
 
 ## Roadmap
 
-- Vue and Svelte adapters over the same core (the core has no React import; this is additive).
-- A CRDT multiplayer integration guide (Yjs / Loro) built on the existing per-actor op log.
+- Vue and Svelte adapters over the same core (the core has no React dependency; this is additive).
+- A CRDT multiplayer integration guide built on the existing per-actor op log.
 - An optional linear-constraint solver behind a `constraints:` escape hatch, at the seam the schema
   already leaves open.
 - Browser-driven CSS differential testing in CI (the unit-level differential ships today).
 
-## Governance
-
-CI runs typecheck, lint, the full test suite (**576 tests**), a build and an entry-size report on
-every push and pull request. The badge at the top is that pipeline.
+## Stability
 
 Two promises, from v0.1:
 
@@ -342,8 +328,8 @@ Two promises, from v0.1:
 | [Persistence](./docs/persistence.md) | `LoadOutcome`, `$unknown`, migrations, serialization |
 | [Accessibility](./docs/accessibility.md) | keyboard map, tap-to-place, live regions, i18n |
 | [SSR & RSC](./docs/ssr.md) | static rendering, hydration, the `position: fixed` caveat |
-| [Migrating from react-grid-layout](./docs/migrate-from-react-grid-layout.md) | `importFromRGL`, anchor inference, what does not carry over |
-| [Architecture](./docs/ARCHITECTURE.md) | the binding v0.1 specification |
+| [Importing a column-grid layout](./docs/import-from-grid.md) | `importFromGrid`, anchor inference, what does not carry over |
+| [Architecture](./docs/ARCHITECTURE.md) | module map and core contracts |
 
 ## License
 

@@ -7,12 +7,12 @@
  *
  * This is the thing every grid layout library for React gets wrong, and it is
  * measurable rather than rhetorical — so it gets a test rather than a README
- * paragraph. See react-grid-layout discussion #2228 ("Performance with many
- * items / re-render of all children on drag"), where the accepted answer is
- * that every child re-renders on every drag frame because layout state lives in
- * the parent component's state. vizbrix keeps layout in an external store with
- * per-item channels, so a drag frame touches: the dragged node's `transform`
- * (imperative), the overlay's guide lines (imperative), and nothing else.
+ * paragraph. It is the O(n²) per-frame re-render behaviour cell-based
+ * dashboard libraries exhibit at this item count: every child re-renders on
+ * every drag frame because layout state lives in the parent component's
+ * state. vizbrix keeps layout in an external store with per-item channels, so
+ * a drag frame touches: the dragged node's `transform` (imperative), the
+ * overlay's guide lines (imperative), and nothing else.
  *
  * The gesture here is driven through the store directly — transient frames,
  * imperative transform writes, then one commit — rather than through synthetic
@@ -154,7 +154,7 @@ describe('render topology during a drag', () => {
   // in controlled mode the parent re-renders after every single commit. If a
   // fresh callback identity propagated through context, one drag commit would
   // re-render all 200 items instead of 1, which is exactly the failure mode
-  // react-grid-layout has.
+  // cell-based dashboard libraries exhibit.
   it('re-renders no item when the parent re-renders with a new inline callback', () => {
     const renders = new Map<string, number>();
     const doc = makeDoc();

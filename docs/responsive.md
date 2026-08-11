@@ -101,8 +101,7 @@ Rules:
 - A size is **active when the measured container width is ≤ its `maxWidth`**. Sizes are
   desktop-first and cascade: at 500px both `md` and `sm` are active, and the smaller one wins.
 - Overrides fold **field by field**, in descending `maxWidth` order. Anything you don't override
-  keeps cascading down from the larger size — Webflow-style, not "one complete layout per
-  breakpoint".
+  keeps cascading down from the larger size — not "one complete layout per breakpoint".
 - A **placement replaces wholesale**. `x` and `y` are discriminated unions whose modes have disjoint
   fields, so merging half of a `center` into a `both` is unsound and is not attempted. Write the
   whole axis.
@@ -134,7 +133,7 @@ To edit a specific size on a desktop screen, force it:
 ```
 
 `size` pins the measured width to that size's `maxWidth`. It is also how you render a breakpoint in
-Storybook or a test without resizing anything.
+a visual test or a component preview without resizing anything.
 
 ## Tier 3 — the deterministic stack
 

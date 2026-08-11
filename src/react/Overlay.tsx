@@ -20,11 +20,18 @@ import {
   SR_ONLY,
   applyTransientAttrs,
   instructionsId,
+  moveButtonLabelFor,
   sameIds,
   transientIds,
   useIsomorphicLayoutEffect,
   useVizbrixContext,
 } from './context';
+
+/** Reconcile `aria-pressed` on the move button inside one item root. */
+function writePressed(el: HTMLElement | null | undefined, pressed: boolean): void {
+  const button = el?.querySelector('[data-vzb-move]');
+  if (button) button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+}
 
 /** Guides beyond this many in one frame are not information, they are noise. */
 const MAX_GUIDES = 12;
@@ -131,7 +138,7 @@ export function announceTo(
 /* ------------------------------------------------------------------ */
 
 export function Overlay(): ReactElement {
-  const { store, instanceId, strings, announceRef } = useVizbrixContext();
+  const { store, instanceId, strings, getLabelRef, announceRef } = useVizbrixContext();
 
   const subscribe = useCallback((cb: () => void) => store.subscribeInteraction(cb), [store]);
   const getSnapshot = useCallback(() => store.getInteraction(), [store]);
@@ -185,6 +192,49 @@ export function Overlay(): ReactElement {
       activeRef.current = NO_IDS;
     };
   }, [store]);
+
+  /**
+   * `aria-pressed` on the tap-to-place move button.
+   *
+   * The button's rendered state is a render-time read, and placing can arm or
+   * disarm WITHOUT re-rendering the item (arming an already-selected item
+   * changes no snapshot; cancel fires only the interaction channel). The
+   * overlay is the interaction-channel subscriber, so it reconciles the
+   * attribute imperatively — same division of labour as `data-dragging`.
+   */
+  const placingRef = useRef<string | null>(null);
+  useIsomorphicLayoutEffect(() => {
+    const next = interaction.phase === 'placing' ? interaction.id : null;
+    const prev = placingRef.current;
+    if (prev === next) return;
+    if (prev !== null) writePressed(store.getNode(prev), false);
+    if (next !== null) writePressed(store.getNode(next), true);
+    placingRef.current = next;
+  }, [interaction, store]);
+
+  useIsomorphicLayoutEffect(() => {
+    return () => {
+      if (placingRef.current !== null) writePressed(store.getNode(placingRef.current), false);
+      placingRef.current = null;
+    };
+  }, [store]);
+
+  /**
+   * Move-button labels carry "position N of M", which changes for UNTOUCHED
+   * items when a sibling is added, removed or restacked — and an untouched
+   * item does not re-render. Rewritten imperatively on order changes: a few
+   * attribute writes, zero renders.
+   */
+  useIsomorphicLayoutEffect(() => {
+    return store.subscribeOrder(() => {
+      for (const id of store.getOrder()) {
+        const button = store.getNode(id)?.querySelector('[data-vzb-move]');
+        if (!button) continue;
+        const label = moveButtonLabelFor(store, strings, getLabelRef.current, id);
+        if (label !== null) button.setAttribute('aria-label', label);
+      }
+    });
+  }, [store, strings, getLabelRef]);
 
   // The line pool is built once and never rebuilt: identical elements with
   // identical (stable) ref callbacks mean React's per-frame reconciliation of

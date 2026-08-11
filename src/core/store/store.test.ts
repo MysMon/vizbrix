@@ -109,7 +109,7 @@ describe('construction', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* subscription precision — the core marketing guarantee               */
+/* subscription precision — the core render-topology guarantee        */
 /* ------------------------------------------------------------------ */
 
 describe('subscription precision', () => {
@@ -747,6 +747,102 @@ describe('undo / redo', () => {
     expect(store.getItemView('a')!.rect.x).toBe(700);
   });
 
+  it('notifies the doc channel when a fully-conflicted undo consumes its entry', () => {
+    const store = editStore();
+    store.moveItem('a', { x: 400, y: 200, w: 100, h: 50 });
+    store.apply(
+      [
+        {
+          type: 'move',
+          id: 'a',
+          before: { x: px(400, 100), y: px(200, 50) },
+          after: { x: px(700, 100), y: px(700, 50) },
+        },
+      ],
+      { transient: true },
+    );
+
+    // The stacks changed (the entry was consumed) even though the document did
+    // not: canUndo and the labels are read through the doc channel, so silence
+    // here would leave an enabled Undo button pointing at nothing.
+    let docEmits = 0;
+    store.subscribeDoc(() => {
+      docEmits += 1;
+    });
+    expect(store.canUndo()).toBe(true);
+    expect(store.undo().status).toBe('empty');
+    expect(store.canUndo()).toBe(false);
+    expect(docEmits).toBe(1);
+  });
+
+  it('records no undo entry for a multi-op batch that nets to no change', () => {
+    const store = editStore();
+    const emits: string[] = [];
+    store.subscribeItem('a', () => emits.push('item'));
+    store.subscribeDoc(() => emits.push('doc'));
+
+    const result = store.apply([
+      { type: 'setHidden', id: 'a', before: false, after: true },
+      { type: 'setHidden', id: 'a', before: true, after: false },
+    ]);
+
+    expect(result.status).toBe('empty');
+    expect(store.canUndo()).toBe(false);
+    expect(emits).toEqual([]);
+    expect(store.getItem('a')!.hidden).not.toBe(true);
+  });
+
+  it('field setters capture the live before, so undo round-trips', () => {
+    const store = editStore();
+    expect(store.setHidden('a', true).status).toBe('applied');
+    expect(store.getItem('a')!.hidden).toBe(true);
+    expect(store.setLocked('a', true).status).toBe('applied');
+    expect(store.setOrder('a', 3).status).toBe('applied');
+    expect(store.setData('a', { note: 'hi' } as never).status).toBe('applied');
+
+    store.undo();
+    store.undo();
+    store.undo();
+    store.undo();
+    const a = store.getItem('a')!;
+    expect(a.hidden).not.toBe(true);
+    expect(a.locked).not.toBe(true);
+    expect(a.order).toBeUndefined();
+    expect((a as { data?: unknown }).data).toBeUndefined();
+    // Setting the current value records nothing.
+    expect(store.setHidden('a', false).status).toBe('empty');
+    expect(store.setHidden('missing', true).status).toBe('empty');
+  });
+
+  it('addItem accepts the flat authoring sugar and lands on top', () => {
+    const store = editStore();
+    const result = store.addItem({ id: 'flat', x: 500, y: 40, w: 120, h: 80, anchor: { x: 'end' } });
+    expect(result.status).toBe('applied');
+    const added = store.getItem('flat')!;
+    expect(added.x.mode).toBe('end');
+    expect(store.getItemView('flat')!.rect).toEqual({ x: 500, y: 40, w: 120, h: 80 });
+    expect(store.getOrder()[2]).toBe('flat');
+    store.undo();
+    expect(store.getItem('flat')).toBeUndefined();
+  });
+
+  it('keeps history across a replaceDoc applied with preserveHistory', () => {
+    const store = editStore();
+    const originalX = store.getItemView('a')!.rect.x;
+    store.moveItem('a', { x: 400, y: 200, w: 100, h: 50 });
+    expect(store.canUndo()).toBe(true);
+
+    const next = { ...store.getDoc() };
+    store.apply(
+      [{ type: 'replaceDoc', before: store.getDoc(), after: next } as unknown as Op],
+      { preserveHistory: true },
+    );
+
+    expect(store.canUndo()).toBe(true);
+    expect(store.undo().status).toBe('applied');
+    expect(store.getItemView('a')!.rect.x).toBe(originalX);
+  });
+
   it('aborts the whole transaction under onConflict:"abort"', () => {
     const store = createStore(twoItemDoc(), { mode: 'edit', onConflict: 'abort' });
     store.moveItem('a', { x: 400, y: 200, w: 100, h: 50 });
@@ -1012,6 +1108,20 @@ describe('reorder tolerates a document with unusable z keys', () => {
     expect(store.getOrder()).toEqual(['a', 'b']);
     expect(() => store.bringToFront('a')).not.toThrow();
     expect(store.getOrder()).toEqual(['b', 'a']);
+  });
+
+  it('refuses sendToBack below the absolute-minimum key instead of throwing', () => {
+    // The floor key is VALID, so canonicalization keeps it — but no key sorts
+    // below it, and the generator refuses. The refusal must surface as an
+    // empty result, not as an exception out of a UI gesture.
+    const store = editStore();
+    corrupt(store, 'b', 'A' + '0'.repeat(26));
+    expect(() => store.sendToBack('a')).not.toThrow();
+    expect(store.sendToBack('a').status).toBe('empty');
+    expect(store.getOrder()).toEqual(['b', 'a']);
+    // The other edge stays reachable.
+    expect(store.bringToFront('b').status).toBe('applied');
+    expect(store.getOrder()).toEqual(['a', 'b']);
   });
 
   it('does not throw out of addItem either', () => {

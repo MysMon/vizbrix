@@ -12,16 +12,22 @@
  * - `warn`  — the document is readable but something was repaired, degraded or
  *   parked. Unknown keys at the document and item level are ALWAYS warnings,
  *   never errors: they park in `$unknown` and round-trip verbatim (spec §1.13).
+ *   So is every issue raised below an `at.<size>` path: a damaged override is
+ *   dropped and the base placement cascades through, which leaves the document
+ *   renderable.
  */
 
 import type { AxisMode, Issue } from './types';
 import {
   AXIS_MODES,
+  BASE_KEYS,
   COLLISION_POLICIES,
   CONTAINER_KEYS,
   DOC_KEYS,
   ITEM_KEYS,
+  LEN_KEYS,
   OVERRIDE_KEYS,
+  SIZE_KEYS,
   hasOwn,
   indexPath,
   isFiniteNumber,
@@ -134,7 +140,7 @@ function checkContainer(value: unknown, out: Issue[]): ContainerFacts {
         ),
       );
     }
-    for (const key of unknownKeysOf(base, ['width', 'height'])) {
+    for (const key of unknownKeysOf(base, BASE_KEYS)) {
       out.push(issueWarn(`container.base.${key}`, 'unknown key; it will be dropped'));
     }
   }
@@ -188,7 +194,7 @@ function checkContainer(value: unknown, out: Issue[]): ContainerFacts {
         } else {
           byMaxWidth.set(def.maxWidth, name);
         }
-        for (const key of unknownKeysOf(def, ['maxWidth'])) {
+        for (const key of unknownKeysOf(def, SIZE_KEYS)) {
           out.push(issueWarn(`${path}.${key}`, 'unknown key; it will be dropped'));
         }
       }
@@ -326,8 +332,8 @@ function checkAt(
       out.push(issueWarn(p, `expected an object, received ${describe(override)}; it will be dropped`));
       continue;
     }
-    if (override.x !== undefined) checkPlacement(override.x, `${p}.x`, false, container, out);
-    if (override.y !== undefined) checkPlacement(override.y, `${p}.y`, true, container, out);
+    if (override.x !== undefined) checkPlacement(override.x, `${p}.x`, false, container, out, true);
+    if (override.y !== undefined) checkPlacement(override.y, `${p}.y`, true, container, out, true);
     checkBoolean(override.hidden, `${p}.hidden`, out);
     if (override.order !== undefined && !isFiniteNumber(override.order)) {
       out.push(
@@ -348,25 +354,48 @@ function checkAt(
 /* placements + lengths                                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * How structurally unreadable geometry is reported.
+ *
+ * A base placement the reader cannot read makes the document unrenderable, so
+ * it is an `error`. The same damage inside an `at.<size>` override costs only
+ * the override — normalize drops it so the base placement cascades through,
+ * which is what not writing the override would have produced — so it is a
+ * `warn` naming that outcome.
+ */
+function damaged(inOverride: boolean, path: string, message: string): Issue {
+  return inOverride
+    ? issueWarn(path, `${message}; the override is dropped and the base placement is kept`)
+    : issueError(path, message);
+}
+
 function checkPlacement(
   value: unknown,
   path: string,
   isY: boolean,
   container: ContainerFacts,
   out: Issue[],
+  /** True for a placement below an `at.<size>` path — see {@link damaged}. */
+  inOverride = false,
 ): void {
   if (value === undefined) {
-    out.push(issueError(path, 'required'));
+    out.push(damaged(inOverride, path, 'required'));
     return;
   }
   if (!isPlainObject(value)) {
-    out.push(issueError(path, `expected an axis placement object, received ${describe(value)}`));
+    out.push(
+      damaged(inOverride, path, `expected an axis placement object, received ${describe(value)}`),
+    );
     return;
   }
   const mode = value.mode;
   if (typeof mode !== 'string' || !MODE_SET.has(mode)) {
     out.push(
-      issueError(`${path}.mode`, `expected one of ${AXIS_MODES.join(' | ')}, received ${describe(mode)}`),
+      damaged(
+        inOverride,
+        `${path}.mode`,
+        `expected one of ${AXIS_MODES.join(' | ')}, received ${describe(mode)}`,
+      ),
     );
     return;
   }
@@ -374,9 +403,9 @@ function checkPlacement(
   const fields = placementFields(mode as AxisMode);
   for (const field of fields) {
     if (value[field] === undefined) {
-      out.push(issueError(`${path}.${field}`, `required for mode '${mode}'`));
+      out.push(damaged(inOverride, `${path}.${field}`, `required for mode '${mode}'`));
     } else {
-      checkLen(value[field], `${path}.${field}`, out);
+      checkLen(value[field], `${path}.${field}`, out, inOverride);
     }
   }
   for (const key of unknownKeysOf(value, ['mode', ...fields])) {
@@ -393,22 +422,32 @@ function checkPlacement(
   }
 }
 
-function checkLen(value: unknown, path: string, out: Issue[]): void {
+function checkLen(value: unknown, path: string, out: Issue[], inOverride = false): void {
   if (isFiniteNumber(value)) return;
   if (isPlainObject(value)) {
-    if (value.pct !== undefined && !isFiniteNumber(value.pct)) {
-      out.push(issueError(`${path}.pct`, `expected a finite number, received ${describe(value.pct)}`));
+    // An unreadable term of an otherwise well-formed length is dropped, leaving
+    // the length itself — inside an override that keeps the override alive, so
+    // it is a repair rather than the whole-placement damage below.
+    for (const term of ['pct', 'px'] as const) {
+      if (value[term] === undefined || isFiniteNumber(value[term])) continue;
+      const message = `expected a finite number, received ${describe(value[term])}`;
+      out.push(
+        inOverride
+          ? issueWarn(`${path}.${term}`, `${message}; it will be dropped`)
+          : issueError(`${path}.${term}`, message),
+      );
     }
-    if (value.px !== undefined && !isFiniteNumber(value.px)) {
-      out.push(issueError(`${path}.px`, `expected a finite number, received ${describe(value.px)}`));
-    }
-    for (const key of unknownKeysOf(value, ['pct', 'px'])) {
+    for (const key of unknownKeysOf(value, LEN_KEYS)) {
       out.push(issueWarn(`${path}.${key}`, 'unknown key in a length; it will be dropped'));
     }
     return;
   }
   out.push(
-    issueError(path, `expected a number (px) or a { pct, px } object, received ${describe(value)}`),
+    damaged(
+      inOverride,
+      path,
+      `expected a number (px) or a { pct, px } object, received ${describe(value)}`,
+    ),
   );
 }
 

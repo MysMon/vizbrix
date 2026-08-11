@@ -197,6 +197,32 @@ describe('L3 — normalize is idempotent', () => {
     }
   });
 
+  it('leaves an id only one item carried on the item that carried it', () => {
+    const rng = makeRng(909);
+    for (let n = 0; n < 60; n++) {
+      const raw = damage(randomRawDoc(rng), rng);
+      // `probe` parks in $unknown, which is how each output item is traced back
+      // to the input item it came from across the sort.
+      const items: Record<string, unknown>[] = (raw.items as Record<string, unknown>[]).map(
+        (item, i) => ({ ...item, probe: i }),
+      );
+      const ids = items
+        .map((item) => item.id)
+        .filter((id): id is string => typeof id === 'string' && id !== '');
+      const owned = new Set(ids.filter((id) => ids.indexOf(id) === ids.lastIndexOf(id)));
+
+      for (const out of normalize({ ...raw, items }).items) {
+        const before = items[out.$unknown!.probe as number]!.id;
+        // Repairing a collision elsewhere in the array must not take an id an
+        // undamaged item — and everything keyed by it outside the document —
+        // still depends on.
+        if (typeof before === 'string' && owned.has(before)) {
+          expect(out.id, `run ${n}: ${before}`).toBe(before);
+        }
+      }
+    }
+  });
+
   it('produces documents that validate cleanly except for advisory warnings', () => {
     for (const seed of SEEDS.slice(0, 60)) {
       const doc = normalize(randomRawDoc(seed));
@@ -218,6 +244,11 @@ function damage(raw: Record<string, unknown>, rng: () => number): Record<string,
     if (rng() < 0.2) record.strayKey = { deep: [1, 2] };
     return record;
   });
+  // A hand-edited document can already carry the very name the de-duplicator
+  // reaches for when it resolves a collision, on an item of its own.
+  const clash = items.find((item, i) => items.findIndex((o) => o.id === item.id) !== i);
+  const last = items[items.length - 1];
+  if (clash && last && last.id !== clash.id) last.id = `${clash.id as string}-2`;
   const out: Record<string, unknown> = { ...raw, items };
   if (rng() < 0.3) out.version = 'v1';
   if (rng() < 0.3) out.container = { base: {} };

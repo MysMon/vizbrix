@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
-import type { VizbrixStore, VizbrixStrings } from '../core/schema/types';
+import type { LayoutItem, Rect, VizbrixStore, VizbrixStrings } from '../core/schema/types';
 import { useVizbrixContext } from './context';
 
 /* ------------------------------------------------------------------ */
@@ -153,5 +153,40 @@ export function useSelection(): SelectionApi {
       clear: () => store.setSelection([]),
     }),
     [ids, store],
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* useVizbrixItem                                                      */
+/* ------------------------------------------------------------------ */
+
+export interface ItemStateApi<TData = undefined> {
+  /** The persisted item, or undefined once it has been removed. */
+  item: LayoutItem<TData> | undefined;
+  /** Resolved at the current measured width (base width on the server). */
+  rect: Rect | undefined;
+  isSelected: boolean;
+}
+
+/**
+ * Subscribe to ONE item's committed state from anywhere inside the provider —
+ * an inspector panel, a properties sidebar, a badge. Re-renders only when that
+ * item's snapshot changes: never on a sibling's commit, never during a
+ * gesture, exactly like the item shells themselves.
+ */
+export function useVizbrixItem<TData = undefined>(id: string): ItemStateApi<TData> {
+  const { store } = useVizbrixContext();
+  const subscribe = useCallback((cb: () => void) => store.subscribeItem(id, cb), [store, id]);
+  const getSnapshot = useCallback(() => store.getItemView(id), [store, id]);
+  const getServerSnapshot = useCallback(() => store.getServerItemView(id), [store, id]);
+  const snap = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+
+  return useMemo<ItemStateApi<TData>>(
+    () => ({
+      item: snap?.item as LayoutItem<TData> | undefined,
+      rect: snap?.rect,
+      isSelected: snap?.selected === true,
+    }),
+    [snap],
   );
 }

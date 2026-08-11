@@ -17,6 +17,7 @@ Items are focusable in edit mode (`tabIndex=0`), in z-sorted DOM order. With an 
 | <kbd>Shift</kbd> + <kbd>Arrow</kbd> | nudge 10 px |
 | <kbd>Cmd</kbd>/<kbd>Ctrl</kbd> + <kbd>Arrow</kbd> | jump to the next snap candidate that way |
 | <kbd>Enter</kbd> or <kbd>Space</kbd> | grab ↔ drop |
+| <kbd>R</kbd> | resize session: arrows adjust width/height (<kbd>Shift</kbd> for 10 px), <kbd>Enter</kbd>/<kbd>Space</kbd>/<kbd>R</kbd> commits, <kbd>Escape</kbd> cancels |
 | <kbd>Escape</kbd> | cancel a grab and return the item to where it was picked up |
 | <kbd>Delete</kbd> / <kbd>Backspace</kbd> | remove the item |
 | <kbd>Cmd</kbd>/<kbd>Ctrl</kbd> + <kbd>]</kbd> / <kbd>[</kbd> | bring to front / send to back |
@@ -31,7 +32,10 @@ Two deliberate choices worth knowing:
 - **A grab session is one transaction.** <kbd>Enter</kbd> picks the item up, arrows move a ghost,
   <kbd>Enter</kbd> drops it and commits once. Because nothing was written during the session,
   <kbd>Escape</kbd> can truly revert. If focus leaves the dashboard mid-grab, the grab is cancelled
-  rather than left as a ghost nobody can see.
+  rather than left as a ghost nobody can see. A resize session (<kbd>R</kbd>) works the same way:
+  <kbd>ArrowRight</kbd>/<kbd>ArrowDown</kbd> grow, <kbd>ArrowLeft</kbd>/<kbd>ArrowUp</kbd> shrink,
+  `minW`/`maxW`/`minH`/`maxH` clamp live, and the commit is announced with the new size — so every
+  pointer resize has a keyboard path too (SC 2.1.1).
 
 Under `direction: 'rtl'`, arrow keys are screen directions: the left arrow moves the item left.
 
@@ -46,7 +50,7 @@ polite announcement; dropping a grab onto one keeps the item grabbed (announced 
 placing onto one is rejected and the placing session stays armed for another attempt.
 
 Do **not** add your own Cmd/Ctrl+Z handler on the container — the core keyboard sensor owns it, and
-a second React handler would undo twice per keystroke (there is a test pinning that down).
+a second React handler would undo twice per keystroke.
 
 ## Tap-to-place — the SC 2.5.7 path
 
