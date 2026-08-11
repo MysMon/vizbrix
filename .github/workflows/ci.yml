@@ -60,6 +60,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
+      # The playground aliases every vizbrix import to ../../src, so its
+      # typecheck resolves 'react' types for those files from the ROOT
+      # node_modules — install both workspaces.
+      - run: pnpm install --frozen-lockfile
       - run: pnpm install --frozen-lockfile
         working-directory: examples/playground
       - run: pnpm typecheck
