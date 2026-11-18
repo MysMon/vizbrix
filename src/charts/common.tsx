@@ -97,9 +97,11 @@ export interface LegendProps {
   onToggle: (key: string) => void;
   /** Swatch shape mirrors the mark: a stroke for lines, a block for bars and areas. */
   shape: 'line' | 'block';
+  /** Series that are lines in a chart whose default mark is a block (combo charts). */
+  lineKeys?: ReadonlySet<string>;
 }
 
-export function Legend({ series, hidden, onToggle, shape }: LegendProps): ReactElement {
+export function Legend({ series, hidden, onToggle, shape, lineKeys }: LegendProps): ReactElement {
   return (
     <div className="vbx-legend">
       {series.map((s) => (
@@ -111,7 +113,7 @@ export function Legend({ series, hidden, onToggle, shape }: LegendProps): ReactE
           data-off={hidden.has(s.key) ? '' : undefined}
           onClick={() => onToggle(s.key)}
         >
-          <span className="vbx-swatch" data-shape={shape} style={{ background: s.color }} />
+          <span className="vbx-swatch" data-shape={lineKeys?.has(s.key) ? 'line' : shape} style={{ background: s.color }} />
           {s.label}
         </button>
       ))}

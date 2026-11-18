@@ -23,6 +23,7 @@ export function buildData(scale = 1): Record<string, unknown> {
     直販: Math.round((900 + r() * 500) * scale),
     パートナー: Math.round((500 + r() * 400) * scale),
     オンライン: Math.round((300 + r() * 350) * scale),
+    目標: Math.round((2100 + r() * 300) * scale),
   }));
 
   const start = Date.UTC(2026, 7, 1);
@@ -66,6 +67,35 @@ export function buildData(scale = 1): Record<string, unknown> {
     更新日: new Date(start + Math.floor(r() * 90) * 86400000),
   }));
 
+  const funnel = [
+    { label: 'サイト訪問', value: Math.round(48200 * scale) },
+    { label: '資料請求', value: Math.round(9640 * scale) },
+    { label: '商談', value: Math.round(2890 * scale) },
+    { label: '見積提出', value: Math.round(1310 * scale) },
+    { label: '受注', value: Math.round(520 * scale) },
+  ];
+
+  const hours = ['9時', '10時', '11時', '12時', '13時', '14時', '15時', '16時', '17時', '18時'];
+  const inquiries = ['月', '火', '水', '木', '金'].flatMap((day, d) =>
+    hours.map((hour, h) => ({
+      day,
+      hour,
+      件数: Math.round((18 + 26 * Math.exp(-((h - 2) ** 2) / 6) + 20 * Math.exp(-((h - 6) ** 2) / 5) - (h === 3 ? 14 : 0) + (d === 0 ? 8 : 0) + r() * 10) * scale),
+    })),
+  );
+
+  const planNames = ['Enterprise', 'Business', 'Team'];
+  const accounts = Array.from({ length: 72 }, (_, i) => {
+    const plan = i % 3;
+    const seats = Math.round([180, 60, 14][plan]! * (0.4 + r() * 1.5));
+    return {
+      顧客: `${names[i % names.length]} ${Math.floor(i / names.length) + 1}`,
+      プラン: planNames[plan]!,
+      席数: seats,
+      月額: Math.round(seats * [0.9, 0.7, 0.5][plan]! * (0.7 + r() * 0.7) * scale * 10) / 10,
+    };
+  });
+
   const last = revenue[revenue.length - 1]!;
   const prev = revenue[revenue.length - 2]!;
   return {
@@ -75,6 +105,9 @@ export function buildData(scale = 1): Record<string, unknown> {
     plans,
     regions,
     deals,
+    funnel,
+    inquiries,
+    accounts,
     kpiMrr: { value: last.実績 * 10000, delta: last.実績 / prev.実績 - 1, trend: revenue.map((d) => d.実績) },
     kpiCustomers: { value: Math.round(1284 * scale), delta: 0.042, trend: [980, 1010, 1060, 1090, 1130, 1170, 1196, 1232, 1284] },
     kpiChurn: { value: 0.018, delta: -0.003, trend: [0.026, 0.024, 0.025, 0.022, 0.021, 0.021, 0.019, 0.018] },

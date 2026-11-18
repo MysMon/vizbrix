@@ -80,10 +80,10 @@ React 18 / 19 に対応しています。スタイルは `import 'vizbrix/styles
 | `vizbrix` | ドキュメントモデル、読み込み/保存、ジオメトリ、ストア（フレームワーク非依存） | 約 10 KB |
 | `vizbrix/react` | `<Dashboard>` — 表示とエディタ | 約 13 KB |
 | `vizbrix/react/static` | `<DashboardStatic>` — フックなしの Server Component | 約 3 KB |
-| `vizbrix/charts` | チャートと数値タイル。単体でも使えます | 約 11 KB |
+| `vizbrix/charts` | チャートと数値タイル。単体でも使えます | 約 13 KB |
 | `vizbrix/bricks` | 組み込みブリックのレジストリ | 約 2 KB |
 | `vizbrix/locales/ja` | 日本語の文言とブリック名 | 約 2 KB |
-| `vizbrix/styles.css` | テーマ（ライト/ダーク） | 約 5 KB |
+| `vizbrix/styles.css` | テーマ（ライト/ダーク） | 約 6 KB |
 
 ---
 
@@ -93,7 +93,10 @@ React 18 / 19 に対応しています。スタイルは `import 'vizbrix/styles
 |---|---|---|
 | `stat` | 主要な数値・前期比・スパークライン | `value` `format` `delta` `deltaLabel` `upIsGood` `trend` |
 | `line` / `area` | 時系列。複数系列、積み上げ、スムージング | `data` `x` `series` `stacked` `curve` `xType` `yFormat` |
-| `bar` | カテゴリ比較。並列/積み上げ、縦/横 | `data` `x` `series` `stacked` `horizontal` `labels` |
+| `bar` | カテゴリ比較。並列/積み上げ、縦/横、折れ線の重ね描き（`lines`） | `data` `x` `series` `lines` `stacked` `horizontal` `labels` |
+| `scatter` | 2 指標の関係。グループ色分け、バブル | `data` `x` `y` `group` `label` `size` |
+| `heatmap` | 2 分類にまたがる量（曜日×時間帯など） | `data` `x` `y` `value` `labels` |
+| `funnel` | 段階ごとの数と転換率 | `data` `label` `value` |
 | `donut` / `segmented` | 構成比 | `data` `label` `value` `format` `centerLabel` |
 | `barlist` | ランキング | `data` `label` `value` `limit` |
 | `meter` | 目標に対する進捗 | `value` `max` `status` `statusLabel` |
@@ -149,7 +152,7 @@ import { LineChart, BarChart, StatTile, DataTable } from 'vizbrix/charts';
 <DataTable data={deals} columns={[{ key: 'name' }, { key: 'amount', format: 'currency:JPY' }]} height={360} />
 ```
 
-- 軸は 1 本。系列の色は宣言順で固定され、系列を隠しても残りの色は変わりません。
+- 軸は 1 本。棒に折れ線を重ねる複合グラフ（`lines`）も同じ軸を共有します。系列の色は宣言順で固定され、系列を隠しても残りの色は変わりません。
 - 折れ線は最寄りの X にスナップする十字線と、全系列を並べたツールチップ。棒はカテゴリ全体がホバー
   領域です。どちらも矢印キーで同じ値を読めます。
 - 折れ線・棒グラフは表表示に切り替えられ、構成比のチャートは数値を凡例に併記します。色だけで系列を区別させません。

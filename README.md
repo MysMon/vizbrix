@@ -81,10 +81,10 @@ Works with React 18 and 19. Load the theme with `import 'vizbrix/styles.css'`.
 | `vizbrix` | Document model, load/save, geometry, store — framework-free | ~10 KB |
 | `vizbrix/react` | `<Dashboard>` — viewer and editor | ~13 KB |
 | `vizbrix/react/static` | `<DashboardStatic>` — a hook-free Server Component | ~3 KB |
-| `vizbrix/charts` | Charts and figures; usable on their own | ~11 KB |
+| `vizbrix/charts` | Charts and figures; usable on their own | ~13 KB |
 | `vizbrix/bricks` | The built-in brick registry | ~2 KB |
 | `vizbrix/locales/ja` | Japanese strings and brick names | ~2 KB |
-| `vizbrix/styles.css` | Theme, light and dark | ~5 KB |
+| `vizbrix/styles.css` | Theme, light and dark | ~6 KB |
 
 ---
 
@@ -94,7 +94,10 @@ Works with React 18 and 19. Load the theme with `import 'vizbrix/styles.css'`.
 |---|---|---|
 | `stat` | A headline number, its change, a sparkline | `value` `format` `delta` `deltaLabel` `upIsGood` `trend` |
 | `line` / `area` | Change over time; multi-series, stacked, smoothed | `data` `x` `series` `stacked` `curve` `xType` `yFormat` |
-| `bar` | Comparing categories; grouped/stacked, vertical/horizontal | `data` `x` `series` `stacked` `horizontal` `labels` |
+| `bar` | Comparing categories; grouped/stacked, vertical/horizontal, line overlays (`lines`) | `data` `x` `series` `lines` `stacked` `horizontal` `labels` |
+| `scatter` | How two measures relate; groups, bubbles | `data` `x` `y` `group` `label` `size` |
+| `heatmap` | Magnitude across two categories (weekday × hour) | `data` `x` `y` `value` `labels` |
+| `funnel` | Stages and the conversion between them | `data` `label` `value` |
 | `donut` / `segmented` | Share of a whole | `data` `label` `value` `format` `centerLabel` |
 | `barlist` | Rankings | `data` `label` `value` `limit` |
 | `meter` | Progress toward a target | `value` `max` `status` `statusLabel` |
@@ -141,7 +144,7 @@ import { LineChart, BarChart, StatTile, DataTable } from 'vizbrix/charts';
 <DataTable data={deals} columns={[{ key: 'name' }, { key: 'amount', format: 'currency:USD' }]} height={360} />
 ```
 
-- One y-axis. A series' colour follows its declared position, so hiding one never repaints the rest.
+- One y-axis — bar charts with line overlays (`lines`) share it too. A series' colour follows its declared position, so hiding one never repaints the rest.
 - Lines get a crosshair that snaps to the nearest x and a tooltip listing every series; on bars the
   whole category band is the hover target. Arrow keys read the same values.
 - Line and bar charts switch to a table view; part-to-whole charts print every amount in the legend.

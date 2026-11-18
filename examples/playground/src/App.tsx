@@ -6,7 +6,7 @@ import { Dashboard, type DashboardHandle } from 'vizbrix/react';
 import { buildData } from './data';
 import { initialLayout } from './layout';
 
-const STORAGE_KEY = 'vizbrix-playground:v2';
+const STORAGE_KEY = 'vizbrix-playground:v3';
 const bricks = withLabels(builtinBricks, brickLabelsJa);
 
 function loadLayout(): DashboardDoc {

@@ -1,5 +1,7 @@
 export { LineChart, AreaChart, type LineChartProps } from './LineChart';
 export { BarChart, type BarChartProps } from './BarChart';
+export { ScatterChart, type ScatterChartProps } from './ScatterChart';
+export { FunnelChart, Heatmap, type FunnelChartProps, type HeatmapProps } from './grids';
 export {
   BarList,
   DonutChart,

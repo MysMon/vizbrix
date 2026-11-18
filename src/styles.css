@@ -39,6 +39,10 @@
   --vbx-series-7: #6250d6;
   --vbx-series-8: #e34948;
   --vbx-series-other: #c3c2b7;
+  --vbx-seq-low: #cde2fb;
+  --vbx-seq-high: #0d366b;
+  --vbx-seq-ink-low: #0b0b0b;
+  --vbx-seq-ink-high: #ffffff;
 
   --vbx-status-good: #0ca30c;
   --vbx-status-warning: #fab219;
@@ -78,6 +82,10 @@
   --vbx-series-7: #9085e9;
   --vbx-series-8: #e66767;
   --vbx-series-other: #52514e;
+  --vbx-seq-low: #0d366b;
+  --vbx-seq-high: #b7d3f6;
+  --vbx-seq-ink-low: #f0efec;
+  --vbx-seq-ink-high: #0b0b0b;
 
   --vbx-good-text: #0ca30c;
   --vbx-bad-text: #e66767;
@@ -111,6 +119,10 @@
     --vbx-series-7: #9085e9;
     --vbx-series-8: #e66767;
     --vbx-series-other: #52514e;
+    --vbx-seq-low: #0d366b;
+    --vbx-seq-high: #b7d3f6;
+    --vbx-seq-ink-low: #f0efec;
+    --vbx-seq-ink-high: #0b0b0b;
 
     --vbx-good-text: #0ca30c;
     --vbx-bad-text: #e66767;
@@ -1273,6 +1285,186 @@
   height: 100%;
   background: var(--vbx-series-1);
   border-radius: 2px;
+}
+
+/* ------------------------------------------------------- scatter and grids */
+
+.vbx-axis-title {
+  font-size: 11px;
+  fill: var(--vbx-text-2);
+}
+
+.vbx-dot-focus {
+  fill: none;
+  stroke-width: 2;
+}
+
+.vbx-heatmap {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  font-family: var(--vbx-font);
+  color: var(--vbx-text);
+}
+
+.vbx-heatmap-grid {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-height: 0;
+  border-radius: 6px;
+  outline: none;
+}
+
+.vbx-heatmap-grid:focus-visible {
+  outline: 2px solid var(--vbx-accent);
+  outline-offset: 3px;
+}
+
+.vbx-heatmap-row,
+.vbx-heatmap-col {
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--vbx-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vbx-heatmap-row {
+  align-self: center;
+  max-width: 96px;
+  padding-right: 6px;
+  text-align: right;
+}
+
+.vbx-heatmap-col {
+  padding-top: 4px;
+  text-align: center;
+}
+
+.vbx-heatmap-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 6px;
+  overflow: hidden;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--vbx-seq-ink-low);
+  background: color-mix(in oklab, var(--vbx-seq-high) var(--t), var(--vbx-seq-low));
+  border-radius: 3px;
+}
+
+.vbx-heatmap-cell[data-ink='on-high'] {
+  color: var(--vbx-seq-ink-high);
+}
+
+.vbx-heatmap-cell[data-empty] {
+  background: var(--vbx-hover);
+}
+
+.vbx-heatmap-cell[data-active] {
+  outline: 2px solid var(--vbx-text);
+  outline-offset: 1px;
+}
+
+.vbx-heatmap-foot {
+  display: flex;
+  flex: none;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 18px;
+  font-size: 11px;
+  color: var(--vbx-muted);
+}
+
+.vbx-heatmap-readout {
+  overflow: hidden;
+  color: var(--vbx-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vbx-heatmap-readout > strong {
+  margin-left: 8px;
+  font-weight: 600;
+  color: var(--vbx-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.vbx-heatmap-scale {
+  display: inline-flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.vbx-heatmap-scale > i {
+  width: 72px;
+  height: 8px;
+  background: linear-gradient(to right in oklab, var(--vbx-seq-low), var(--vbx-seq-high));
+  border-radius: 4px;
+}
+
+.vbx-funnel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  justify-content: safe center;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.vbx-funnel > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 3.6em;
+  gap: 5px 10px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.vbx-funnel-name {
+  overflow: hidden;
+  color: var(--vbx-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vbx-funnel-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.vbx-funnel-rate {
+  font-size: 12px;
+  color: var(--vbx-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.vbx-funnel-track {
+  grid-column: 1 / -1;
+  height: 12px;
+  background: color-mix(in srgb, var(--vbx-series-1) 14%, var(--vbx-surface));
+  border-radius: 0 4px 4px 0;
+}
+
+.vbx-funnel-track > span {
+  display: block;
+  height: 100%;
+  background: var(--vbx-series-1);
+  border-radius: 0 4px 4px 0;
 }
 
 /* ------------------------------------------------------------------- table */

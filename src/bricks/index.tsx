@@ -5,16 +5,22 @@ import {
   BarList,
   DataTable,
   DonutChart,
+  FunnelChart,
+  Heatmap,
   LineChart,
   Meter,
+  ScatterChart,
   SegmentedBar,
   StatTile,
   type BarChartProps,
   type BarListProps,
   type Column,
   type DonutChartProps,
+  type FunnelChartProps,
+  type HeatmapProps,
   type LineChartProps,
   type MeterProps,
+  type ScatterChartProps,
   type StatTileProps,
 } from 'vizbrix/charts';
 import { defineBrick, resolveData, type BrickDefinition, type BrickRegistry } from '../react/brick';
@@ -146,6 +152,62 @@ export const barlist = defineBrick<BarListBrickProps>({
   render: ({ props, data, lang }) => <BarList {...props} data={rowsOf(props.data, data)} lang={lang} />,
 });
 
+export type ScatterBrickProps = ChartData<ScatterChartProps>;
+
+const SAMPLE_POINTS = [
+  { name: 'A', spend: 12, revenue: 38 },
+  { name: 'B', spend: 18, revenue: 44 },
+  { name: 'C', spend: 25, revenue: 71 },
+  { name: 'D', spend: 31, revenue: 69 },
+  { name: 'E', spend: 40, revenue: 96 },
+];
+
+export const scatter = defineBrick<ScatterBrickProps>({
+  label: 'Scatter plot',
+  description: 'How two measures relate',
+  icon: icon(
+    <>
+      <circle cx="5" cy="12" r="1.25" />
+      <circle cx="8.5" cy="8.5" r="1.25" />
+      <circle cx="12" cy="10" r="1.25" />
+      <circle cx="13.5" cy="5" r="1.25" />
+    </>,
+  ),
+  defaults: { w: 600, h: 340, minW: 260, minH: 200, title: 'Scatter plot', props: { data: SAMPLE_POINTS, x: 'spend', y: 'revenue', label: 'name' } },
+  render: ({ props, data, lang }) => <ScatterChart {...props} data={rowsOf(props.data, data)} lang={lang} />,
+});
+
+export type HeatmapBrickProps = ChartData<HeatmapProps>;
+
+const SAMPLE_GRID = ['Mon', 'Tue', 'Wed'].flatMap((day, r) =>
+  ['AM', 'Noon', 'PM', 'Night'].map((slot, c) => ({ day, slot, value: ((r + 2) * (c + 3) * 7) % 40 })),
+);
+
+export const heatmap = defineBrick<HeatmapBrickProps>({
+  label: 'Heatmap',
+  description: 'Magnitude across two categories',
+  icon: icon(<path d="M3 3h3.5v3.5H3zM7.5 3H11v3.5H7.5zM12 3h3v3.5h-3zM3 7.5h3.5V11H3zM7.5 7.5H11V11H7.5zM12 7.5h3V11h-3zM3 12h3.5v3H3zM7.5 12H11v3H7.5zM12 12h3v3h-3z" strokeWidth="1" />),
+  defaults: { w: 600, h: 300, minW: 240, minH: 160, title: 'Heatmap', props: { data: SAMPLE_GRID, x: 'slot', y: 'day', value: 'value' } },
+  render: ({ props, data, lang }) => <Heatmap {...props} data={rowsOf(props.data, data)} lang={lang} />,
+});
+
+export type FunnelBrickProps = ChartData<FunnelChartProps>;
+
+const SAMPLE_STAGES = [
+  { label: 'Visits', value: 12400 },
+  { label: 'Sign-ups', value: 3100 },
+  { label: 'Trials', value: 1240 },
+  { label: 'Paid', value: 410 },
+];
+
+export const funnel = defineBrick<FunnelBrickProps>({
+  label: 'Funnel',
+  description: 'Stages and the conversion between them',
+  icon: icon(<path d="M3 4.5h12M3 9h8.5M3 13.5h4.5" strokeWidth="2.5" />),
+  defaults: { w: 400, h: 280, minW: 220, minH: 160, title: 'Funnel', props: { data: SAMPLE_STAGES } },
+  render: ({ props, data, lang }) => <FunnelChart {...props} data={rowsOf(props.data, data)} lang={lang} />,
+});
+
 export type MeterBrickProps = Omit<MeterProps, 'lang' | 'className' | 'style' | 'value'> & {
   value?: number;
   data?: string;
@@ -211,7 +273,7 @@ export const text = defineBrick<TextBrickProps>({
 });
 
 /** Every built-in brick, ready to pass to `<Dashboard bricks={…}>` or to extend. */
-export const builtinBricks = { stat, line, area, bar, donut, segmented, barlist, meter, table, text } satisfies BrickRegistry;
+export const builtinBricks = { stat, line, area, bar, scatter, heatmap, funnel, donut, segmented, barlist, meter, table, text } satisfies BrickRegistry;
 
 /**
  * Relabel bricks for another language without redefining them:

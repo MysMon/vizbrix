@@ -19,6 +19,11 @@ export interface BarChartProps {
   /** Field holding the category of each bar group. */
   x: string;
   series: readonly (SeriesSpec | string)[];
+  /**
+   * Series drawn as lines over the bars, on the same axis — a plan or target
+   * against actuals. Vertical charts only.
+   */
+  lines?: readonly (SeriesSpec | string)[];
   /** Stack series within a category instead of placing them side by side. */
   stacked?: boolean;
   /** Draw categories down the side with bars growing to the right — best for long labels and rankings. */
@@ -61,6 +66,7 @@ interface Layout {
   bandTicks: { pos: number; label: string; anchor: 'start' | 'middle' | 'end' }[];
   zero: number;
   bars: Bar[];
+  lines: { key: string; color: string; d: string; points: [number, number][] }[];
   tips: { x: number; y: number; label: string; anchor: 'start' | 'middle' | 'end' }[];
   format: (value: number) => string;
 }
@@ -87,10 +93,13 @@ const f = (n: number): string => (Math.round(n * 10) / 10).toString();
 function buildLayout(
   categories: readonly string[],
   values: readonly (readonly (number | null)[])[],
-  visible: readonly ResolvedSeries[],
+  allVisible: readonly ResolvedSeries[],
   size: Size,
   props: Pick<BarChartProps, 'stacked' | 'horizontal' | 'labels' | 'yFormat' | 'yMax' | 'lang'>,
+  barCount: number,
 ): Layout {
+  const visible = allVisible.filter((s) => s.index < barCount);
+  const lineSeries = allVisible.filter((s) => s.index >= barCount);
   const horizontal = !!props.horizontal;
   const stacked = !!props.stacked;
   const n = categories.length;
@@ -113,6 +122,13 @@ function buildLayout(
     if (stacked) {
       max = Math.max(max, pos);
       min = Math.min(min, neg);
+    }
+  }
+  for (const s of lineSeries) {
+    for (const v of values[s.index]!) {
+      if (v === null) continue;
+      max = Math.max(max, v);
+      min = Math.min(min, v);
     }
   }
   if (props.yMax !== undefined) max = props.yMax;
@@ -204,6 +220,25 @@ function buildLayout(
     }
   }
 
+  const lines: Layout['lines'] = lineSeries.map((s) => {
+    const points: [number, number][] = [];
+    let d = '';
+    let pen = false;
+    for (let i = 0; i < n; i++) {
+      const v = values[s.index]![i];
+      if (v === null || v === undefined) {
+        pen = false;
+        continue;
+      }
+      const x = bandStart[i]! + band / 2;
+      const y = scale(v);
+      d += `${pen ? 'L' : 'M'}${f(x)},${f(y)}`;
+      pen = true;
+      points.push([x, y]);
+    }
+    return { key: s.key, color: s.color, d, points };
+  });
+
   // Category labels, thinned so neighbours never collide.
   const bandTicks: Layout['bandTicks'] = [];
   if (horizontal) {
@@ -227,6 +262,7 @@ function buildLayout(
     bandTicks,
     zero,
     bars,
+    lines,
     tips,
     format,
   };
@@ -277,6 +313,14 @@ const Marks = memo(function Marks({ layout, size }: { layout: Layout; size: Size
           </text>
         ),
       )}
+      {layout.lines.map((l) => (
+        <g key={l.key}>
+          <path className="vbx-line" d={l.d} style={{ stroke: l.color }} />
+          {l.points.length <= 40
+            ? l.points.map(([x, y], i) => <circle key={i} className="vbx-dot" cx={x} cy={y} r={4} style={{ fill: l.color }} />)
+            : null}
+        </g>
+      ))}
       {layout.tips.map((t, i) => (
         <text key={i} className="vbx-tip" x={t.x} y={t.y} dy={horizontal ? '0.32em' : undefined} textAnchor={t.anchor}>
           {t.label}
@@ -367,7 +411,10 @@ function HoverLayer(props: {
  */
 export function BarChart(props: BarChartProps): ReactElement {
   const { data, x, lang } = props;
-  const series = useMemo(() => resolveSeries(props.series), [props.series]);
+  const barCount = props.series.length;
+  const overlay = props.horizontal ? undefined : props.lines;
+  const series = useMemo(() => resolveSeries([...props.series, ...(overlay ?? [])]), [props.series, overlay]);
+  const lineKeys = useMemo(() => new Set(series.filter((s) => s.index >= barCount).map((s) => s.key)), [series, barCount]);
   const [hidden, toggle] = useHidden(series);
   const categories = useMemo(() => data.map((d) => String(d[x] ?? '')), [data, x]);
   const values = useMemo(() => series.map((s) => data.map((d) => toNumber(d[s.key]))), [data, series]);
@@ -385,7 +432,7 @@ export function BarChart(props: BarChartProps): ReactElement {
       empty={categories.length === 0 || series.length === 0}
       emptyText={props.emptyText}
       tableLabel={props.tableLabel}
-      legend={showLegend ? <Legend series={series} hidden={hidden} onToggle={toggle} shape="block" /> : undefined}
+      legend={showLegend ? <Legend series={series} hidden={hidden} onToggle={toggle} shape="block" lineKeys={lineKeys} /> : undefined}
       table={() => {
         const fmt = formatter(props.yFormat, lang);
         return {
@@ -401,7 +448,7 @@ export function BarChart(props: BarChartProps): ReactElement {
       }}
     >
       {(size) => (
-        <BarPlot categories={categories} values={values} visible={visible} size={size} label={label} options={props} />
+        <BarPlot categories={categories} values={values} visible={visible} size={size} label={label} options={props} barCount={barCount} />
       )}
     </ChartFrame>
   );
@@ -414,12 +461,13 @@ function BarPlot(props: {
   size: Size;
   label: string;
   options: BarChartProps;
+  barCount: number;
 }): ReactElement {
-  const { categories, values, visible, size, options } = props;
+  const { categories, values, visible, size, options, barCount } = props;
   const { stacked, horizontal, labels, yFormat, yMax, lang } = options;
   const layout = useMemo(
-    () => buildLayout(categories, values, visible, size, { stacked, horizontal, labels, yFormat, yMax, lang }),
-    [categories, values, visible, size, stacked, horizontal, labels, yFormat, yMax, lang],
+    () => buildLayout(categories, values, visible, size, { stacked, horizontal, labels, yFormat, yMax, lang }, barCount),
+    [categories, values, visible, size, stacked, horizontal, labels, yFormat, yMax, lang, barCount],
   );
   return (
     <>

@@ -8,8 +8,8 @@ const budgets = {
   'dist/index.js': 12,
   'dist/react/index.js': 16,
   'dist/react/static.js': 4,
-  'dist/charts/index.js': 16,
-  'dist/bricks/index.js': 4,
+  'dist/charts/index.js': 18,
+  'dist/bricks/index.js': 5,
   'dist/locales/ja.js': 2,
 };
 

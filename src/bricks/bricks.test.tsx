@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { BarChart, DataTable, DonutChart, LineChart, Meter, StatTile } from '../charts';
+import { BarChart, DataTable, DonutChart, FunnelChart, Heatmap, LineChart, Meter, ScatterChart, StatTile } from '../charts';
 import { createDashboard } from '../core/doc';
 import { brickLabelsJa } from '../locales/ja';
 import { Dashboard } from '../react/Dashboard';
@@ -101,6 +101,74 @@ describe('BarChart', () => {
     const plot = screen.getByRole('group');
     fireEvent.keyDown(plot, { key: 'ArrowDown' });
     expect(screen.getByRole('status').textContent).toMatch(/Jan.*a.*10.*b.*40/);
+  });
+});
+
+describe('combo, scatter, heatmap, funnel', () => {
+  it('BarChart overlays line series on the same axis and keys them as lines', () => {
+    const data = rows.map((r) => ({ ...r, target: 80 }));
+    const { container } = render(<BarChart data={data} x="month" series={['a', 'b']} lines={['target']} stacked lang="en" />);
+    expect(container.querySelectorAll('.vbx-plot path.vbx-line')).toHaveLength(1);
+    expect(container.querySelector<SVGPathElement>('.vbx-plot path.vbx-line')!.style.stroke).toBe('var(--vbx-series-3)');
+    // The axis grows to include the line (stack max is 50, target is 80).
+    expect([...container.querySelectorAll('text.vbx-tick')].map((t) => t.textContent)).toContain('80');
+    const swatch = screen.getByRole('button', { name: 'target' }).querySelector('.vbx-swatch')!;
+    expect(swatch.getAttribute('data-shape')).toBe('line');
+    fireEvent.keyDown(screen.getByRole('group'), { key: 'ArrowRight' });
+    expect(screen.getByRole('status').textContent).toMatch(/target.*80/);
+  });
+
+  it('ScatterChart colours by group, sizes bubbles by area and reads points from the keyboard', () => {
+    const data = [
+      { name: 'p1', x: 1, y: 10, g: 'A', s: 100 },
+      { name: 'p2', x: 5, y: 30, g: 'B', s: 25 },
+      { name: 'p3', x: 9, y: 20, g: 'A', s: 0 },
+      { name: 'bad', x: 'n/a', y: 1, g: 'A', s: 1 },
+    ];
+    const { container } = render(<ScatterChart data={data} x="x" y="y" group="g" label="name" size="s" lang="en" />);
+    const dots = [...container.querySelectorAll<SVGCircleElement>('circle.vbx-dot')];
+    expect(dots).toHaveLength(3);
+    expect(dots.map((d) => d.style.fill)).toEqual(['var(--vbx-series-1)', 'var(--vbx-series-2)', 'var(--vbx-series-1)']);
+    expect(dots.map((d) => Number(d.getAttribute('r')))).toEqual([16, 9.5, 3]);
+    const plot = screen.getByRole('group');
+    fireEvent.keyDown(plot, { key: 'ArrowRight' });
+    fireEvent.keyDown(plot, { key: 'ArrowRight' });
+    expect(screen.getByRole('status').textContent).toMatch(/p2.*B.*x.*5.*y.*30/);
+    fireEvent.click(screen.getByRole('button', { name: 'A' }));
+    expect(container.querySelectorAll('circle.vbx-dot')).toHaveLength(1);
+  });
+
+  it('Heatmap maps values onto one ramp, honours explicit order and reads cells', () => {
+    const data = [
+      { d: 'Mon', h: 'AM', v: 0 },
+      { d: 'Mon', h: 'PM', v: 50 },
+      { d: 'Tue', h: 'PM', v: 100 },
+    ];
+    const { container } = render(<Heatmap data={data} x="h" y="d" value="v" yOrder={['Tue', 'Mon']} labels lang="en" />);
+    const cells = [...container.querySelectorAll<HTMLElement>('.vbx-heatmap-cell')];
+    expect(cells).toHaveLength(4);
+    expect(cells.map((c) => c.style.getPropertyValue('--t'))).toEqual(['', '100.0%', '0.0%', '50.0%']);
+    expect(cells[0]!.hasAttribute('data-empty')).toBe(true);
+    expect(cells[1]!.getAttribute('data-ink')).toBe('on-high');
+    expect(cells[3]!.textContent).toBe('50');
+    const grid = screen.getByRole('group');
+    fireEvent.keyDown(grid, { key: 'ArrowRight' });
+    fireEvent.keyDown(grid, { key: 'ArrowRight' });
+    expect(screen.getByRole('status').textContent).toBe('Tue · PM100');
+    expect(container.querySelector('.vbx-heatmap-scale')!.textContent).toBe('0100');
+  });
+
+  it('FunnelChart sizes bars against the first stage and shows step conversion', () => {
+    const data = [
+      { label: 'Visits', value: 48200 },
+      { label: 'Leads', value: 9640 },
+      { label: 'Won', value: 0 },
+    ];
+    const { container } = render(<FunnelChart data={data} lang="en" />);
+    const widths = [...container.querySelectorAll<HTMLElement>('.vbx-funnel-track > span')].map((s) => s.style.width);
+    expect(widths).toEqual(['100%', '20%', '0%']);
+    expect([...container.querySelectorAll('.vbx-funnel-value')].map((n) => n.textContent)).toEqual(['48,200', '9,640', '0']);
+    expect([...container.querySelectorAll('.vbx-funnel-rate')].map((n) => n.textContent)).toEqual(['', '20%', '0%']);
   });
 });
 
