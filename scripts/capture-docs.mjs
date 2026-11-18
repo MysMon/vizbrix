@@ -67,6 +67,8 @@ async function region(page, name, ids, pad = 12) {
   await region(page, 'bricks-bar-area-ranking', ['channels', 'traffic', 'regions']);
   await region(page, 'bricks-funnel-heatmap-scatter', ['funnel', 'inquiries', 'accounts']);
   await region(page, 'bricks-table-meter', ['deals', 'quota', 'note']);
+  await page.waitForTimeout(900); // ECharts entrance animation
+  await region(page, 'bricks-echarts', ['flow', 'mix']);
 
   // Tooltip on the line chart
   await page.evaluate(() => window.scrollTo(0, 0));

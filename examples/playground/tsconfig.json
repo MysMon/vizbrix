@@ -18,6 +18,7 @@
       "vizbrix/react/static": ["../../src/react/static.ts"],
       "vizbrix/charts": ["../../src/charts/index.ts"],
       "vizbrix/bricks": ["../../src/bricks/index.tsx"],
+      "vizbrix/echarts": ["../../src/echarts/index.ts"],
       "vizbrix/locales/ja": ["../../src/locales/ja.ts"]
     }
   },

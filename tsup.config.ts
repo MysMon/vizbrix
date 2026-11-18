@@ -7,7 +7,7 @@ const shared: Options = {
   sourcemap: true,
   clean: false,
   target: 'es2022',
-  external: ['react', 'react-dom', 'react/jsx-runtime', 'vizbrix/charts'],
+  external: ['react', 'react-dom', 'react/jsx-runtime', 'vizbrix/charts', 'echarts', 'echarts/core'],
 };
 
 export default defineConfig([
@@ -32,6 +32,8 @@ export default defineConfig([
     entry: {
       'react/index': 'src/react/index.ts',
       'charts/index': 'src/charts/index.ts',
+      'echarts/index': 'src/echarts/index.ts',
+      'echarts/core': 'src/echarts/core.ts',
     },
     banner: { js: '"use client";' },
   },

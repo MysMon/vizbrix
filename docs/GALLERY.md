@@ -59,6 +59,13 @@ node scripts/capture-docs.mjs
 
 ![表、メーター、テキスト](./images/bricks-table-meter.png)
 
+### ECharts ブリック — `echarts`（任意の追加機能）
+
+`vizbrix/echarts` を読み込むと、Apache ECharts の任意のチャートをブリックとして置けます。
+配色や文字色は vizbrix のテーマから引き継がれます。
+
+![ECharts のサンキーとツリーマップ](./images/bricks-echarts.png)
+
 ---
 
 ## 操作と状態

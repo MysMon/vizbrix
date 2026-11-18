@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import type { DashboardItem } from '../core/types';
 import type { DataMap, SettingField } from './brick';
 import { itemById, useDashboardContext, useDashboardState } from './context';
@@ -20,6 +20,41 @@ function columnsOf(item: DashboardItem, field: { dataset?: string; numeric?: boo
     const value = sample.find((row) => row[key] !== null && row[key] !== undefined)?.[key];
     return typeof value === 'number';
   });
+}
+
+/** A JSON editor for an object-valued prop. Keeps the user's text; applies it only while it parses. */
+function JsonField(props: { value: unknown; onChange: (value: unknown) => void }): ReactElement {
+  const [text, setText] = useState(() => JSON.stringify(props.value ?? {}, null, 2));
+  const [invalid, setInvalid] = useState(false);
+  const applied = useRef(props.value);
+  // Follow outside changes (undo, another editor) without clobbering what is being typed.
+  useEffect(() => {
+    if (props.value !== applied.current) {
+      applied.current = props.value;
+      setText(JSON.stringify(props.value ?? {}, null, 2));
+      setInvalid(false);
+    }
+  }, [props.value]);
+  return (
+    <textarea
+      className="vbx-input vbx-textarea vbx-code"
+      rows={12}
+      spellCheck={false}
+      aria-invalid={invalid}
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        try {
+          const parsed: unknown = JSON.parse(e.target.value);
+          setInvalid(false);
+          applied.current = parsed;
+          props.onChange(parsed);
+        } catch {
+          setInvalid(true);
+        }
+      }}
+    />
+  );
 }
 
 /**
@@ -77,6 +112,8 @@ export function Inspector({ id }: { id: string }): ReactElement | null {
         );
       case 'boolean':
         return null; // rendered as a checkbox row below
+      case 'json':
+        return <JsonField value={value} onChange={(next) => set(field.key, next)} />;
       case 'select':
         return (
           <select className="vbx-input" value={typeof value === 'string' ? value : ''} onChange={(e) => set(field.key, e.target.value)}>

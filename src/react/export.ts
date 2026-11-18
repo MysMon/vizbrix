@@ -52,6 +52,18 @@ export function safeFilename(name: string): string {
 }
 
 function inlineStyles(source: Element, target: Element): void {
+  // A cloned <canvas> is blank; swap in a picture of the original.
+  if (source instanceof HTMLCanvasElement) {
+    try {
+      const image = document.createElement('img');
+      image.src = source.toDataURL();
+      image.setAttribute('style', `width:${source.clientWidth}px;height:${source.clientHeight}px;`);
+      target.replaceWith(image);
+    } catch {
+      // tainted canvas: leave it blank
+    }
+    return;
+  }
   if (source instanceof HTMLElement || source instanceof SVGElement) {
     const computed = getComputedStyle(source);
     let css = '';
@@ -69,8 +81,8 @@ function inlineStyles(source: Element, target: Element): void {
 /**
  * Render an element to a PNG without any library: clone it with its computed
  * styles inlined, wrap the clone in an SVG `foreignObject`, and draw that to
- * a canvas. Works for the HTML and SVG that bricks are made of; `<canvas>`,
- * cross-origin images and iframes inside a brick are not captured.
+ * a canvas. Works for the HTML, SVG and same-origin `<canvas>` that bricks
+ * are made of; cross-origin images and iframes inside a brick are not captured.
  */
 export async function elementToPng(element: HTMLElement, scale = 2): Promise<Blob> {
   const box = element.getBoundingClientRect();

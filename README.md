@@ -85,6 +85,7 @@ Works with React 18 and 19. Load the theme with `import 'vizbrix/styles.css'`.
 | `vizbrix/react/static` | `<DashboardStatic>` — a hook-free Server Component | ~3 KB |
 | `vizbrix/charts` | Charts and figures; usable on their own | ~16 KB |
 | `vizbrix/bricks` | The built-in brick registry | ~3 KB |
+| `vizbrix/echarts` | A brick and component for Apache ECharts (optional; needs `echarts`) | ~3 KB |
 | `vizbrix/locales/ja` | Japanese strings and brick names | ~2 KB |
 | `vizbrix/styles.css` | Theme, light and dark | ~7 KB |
 
@@ -172,6 +173,38 @@ import { LineChart, BarChart, StatTile, DataTable } from 'vizbrix/charts';
   vision deficiency, in both light and dark.
 
 ---
+
+## Using ECharts alongside (optional)
+
+For chart types the built-in set does not cover — sankey, treemap, radar, candlestick, maps —
+[Apache ECharts](https://echarts.apache.org/) plugs in as a brick. It is a separate entry: if you do
+not import it, it is not in your bundle.
+
+```sh
+npm install echarts
+```
+
+```tsx
+import { echartsBrick } from 'vizbrix/echarts';
+
+<Dashboard bricks={{ ...builtinBricks, echarts: echartsBrick }} … />
+
+// In the layout: `option` is an ECharts option exactly as ECharts documents it
+{ id: 'flow', type: 'echarts', title: 'Channel to plan', w: 680, h: 360,
+  props: { option: { tooltip: {}, series: [{ type: 'sankey', data: nodes, links }] } } }
+```
+
+- **Same theme.** Palette, ink, rules and font are read from vizbrix's CSS custom properties and
+  handed to ECharts, and the chart follows light/dark switches.
+- **Data binding.** Name a dataset in `props.data` and its rows become ECharts' `dataset.source`
+  (an `option.dataset` of your own wins).
+- **A brick like any other.** It resizes with its brick and gets loading/error states, `onSelect`,
+  CSV/image export and the settings panel (the option is edited as JSON).
+- Renders to SVG by default; set `props.renderer: 'canvas'` for very large series.
+- Outside a dashboard, use `<EChart option={…} data={rows} height={320} />`.
+- To bundle only the chart types you use, pass your own `echarts/core` to `createECharts()` from
+  `vizbrix/echarts/core`.
+- The brick is client-only (not for `<DashboardStatic>`).
 
 ## Editing
 
@@ -303,6 +336,7 @@ Every colour, radius and font is a CSS custom property.
 
 - **Compaction or pushing.** Bricks stay where they are put; moving one never moves another.
 - **Data fetching.** Getting data into `data` is the app's job.
+- **An ever-growing built-in chart set.** The common forms stay small and in-house; the long tail goes to ECharts.
 - **Dual-axis charts, an infinite canvas, real-time collaboration.**
 
 ## Development

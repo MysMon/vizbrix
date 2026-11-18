@@ -47,7 +47,7 @@ try {
 
   const pkg = join(dir, 'node_modules/vizbrix/dist');
   const banner = (f) => readFileSync(join(pkg, f), 'utf8').trimStart().startsWith('"use client"');
-  for (const f of ['react/index.js', 'react/index.cjs', 'charts/index.js', 'charts/index.cjs']) {
+  for (const f of ['react/index.js', 'react/index.cjs', 'charts/index.js', 'charts/index.cjs', 'echarts/index.js', 'echarts/core.cjs']) {
     if (!banner(f)) throw new Error(`${f} is missing its "use client" banner`);
   }
   for (const f of ['index.js', 'react/static.js', 'bricks/index.js', 'locales/ja.js', 'react/static.cjs', 'bricks/index.cjs']) {

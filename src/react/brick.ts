@@ -53,6 +53,8 @@ export type SettingField = { key: string; label?: string } & (
   | { type: 'fields'; numeric?: boolean; dataset?: string }
   /** Pick a number format. */
   | { type: 'format' }
+  /** Edit an object-valued prop as JSON text; invalid JSON is not applied. */
+  | { type: 'json' }
 );
 
 export interface BrickDefaults<P> {

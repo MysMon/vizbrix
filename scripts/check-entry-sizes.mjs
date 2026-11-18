@@ -10,6 +10,7 @@ const budgets = {
   'dist/react/static.js': 4,
   'dist/charts/index.js': 18,
   'dist/bricks/index.js': 5,
+  'dist/echarts/index.js': 4,
   'dist/locales/ja.js': 3,
 };
 
@@ -21,7 +22,7 @@ for (const [entry, budget] of Object.entries(budgets)) {
     minify: true,
     write: false,
     format: 'esm',
-    external: ['react', 'react-dom', 'react/jsx-runtime', 'vizbrix/charts'],
+    external: ['react', 'react-dom', 'react/jsx-runtime', 'vizbrix/charts', 'echarts', 'echarts/core'],
   });
   const kb = gzipSync(result.outputFiles[0].contents).length / 1024;
   const ok = kb <= budget;

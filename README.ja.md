@@ -84,6 +84,7 @@ React 18 / 19 に対応しています。スタイルは `import 'vizbrix/styles
 | `vizbrix/react/static` | `<DashboardStatic>` — フックなしの Server Component | 約 3 KB |
 | `vizbrix/charts` | チャートと数値タイル。単体でも使えます | 約 16 KB |
 | `vizbrix/bricks` | 組み込みブリックのレジストリ | 約 3 KB |
+| `vizbrix/echarts` | Apache ECharts を使うブリックとコンポーネント（任意。`echarts` が別途必要） | 約 3 KB |
 | `vizbrix/locales/ja` | 日本語の文言とブリック名 | 約 2 KB |
 | `vizbrix/styles.css` | テーマ（ライト/ダーク） | 約 7 KB |
 
@@ -178,6 +179,38 @@ import { LineChart, BarChart, StatTile, DataTable } from 'vizbrix/charts';
 - 既定の配色は、隣り合う系列が色覚多様性のもとでも区別できる順序で検証済みです。
 
 ---
+
+## ECharts を併用する（任意）
+
+組み込みチャートにない種類（サンキー、ツリーマップ、レーダー、ローソク足、地図など）は、
+[Apache ECharts](https://echarts.apache.org/) をそのままブリックとして使えます。必要な人だけが読み込む
+別エントリなので、使わなければバンドルには入りません。
+
+```sh
+npm install echarts
+```
+
+```tsx
+import { echartsBrick } from 'vizbrix/echarts';
+
+<Dashboard bricks={{ ...builtinBricks, echarts: echartsBrick }} … />
+
+// レイアウト側: option は ECharts の公式ドキュメントどおりのオブジェクト
+{ id: 'flow', type: 'echarts', title: '流入から契約へ', w: 680, h: 360,
+  props: { option: { tooltip: {}, series: [{ type: 'sankey', data: nodes, links }] } } }
+```
+
+- **テーマが揃います。** 配色・文字色・罫線・書体を vizbrix の CSS 変数から読み取って ECharts に渡し、
+  ライト／ダークの切り替えにも追従します。
+- **データ連携。** `props.data` にデータセット名を書くと、その行が ECharts の `dataset.source` に
+  入ります（`option.dataset` を自分で書いた場合はそちらが優先）。
+- **他のブリックと同じ扱い。** ブリックの大きさへの追従、読み込み・エラー表示、`onSelect`、
+  CSV／画像のエクスポート、設定パネル（option を JSON で編集）がそのまま使えます。
+- 既定は SVG 描画です。非常に大きなデータでは `props.renderer: 'canvas'` を指定してください。
+- ダッシュボードの外では `<EChart option={…} data={rows} height={320} />` として使えます。
+- 使うチャートだけをバンドルしたい場合は、`vizbrix/echarts/core` の `createECharts()` に
+  自分で組んだ `echarts/core` を渡します。
+- このブリックはクライアント専用です（`<DashboardStatic>` では使えません）。
 
 ## 編集
 
@@ -310,6 +343,7 @@ export default async function Page() {
 
 - **詰め直し・押し出し。** ブリックは置いた場所に留まります。他のブリックを動かすことはしません。
 - **データ取得。** `data` に渡すところまでがアプリの責務です。
+- **組み込みチャートの種類を際限なく増やすこと。** 基本形は軽量な自前実装で持ち、それ以外は ECharts に任せます。
 - **二軸グラフ・無限キャンバス・共同編集。**
 
 ## 開発

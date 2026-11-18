@@ -2,13 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { StatusMap } from 'vizbrix/react';
 import { parseDashboard, serializeDashboard, type DashboardDoc } from 'vizbrix';
 import { builtinBricks, withLabels } from 'vizbrix/bricks';
+import { echartsBrick } from 'vizbrix/echarts';
 import { brickLabelsJa, ja } from 'vizbrix/locales/ja';
 import { Dashboard, type DashboardHandle } from 'vizbrix/react';
 import { buildData } from './data';
 import { initialLayout } from './layout';
 
-const STORAGE_KEY = 'vizbrix-playground:v4';
-const bricks = withLabels(builtinBricks, brickLabelsJa);
+const STORAGE_KEY = 'vizbrix-playground:v5';
+// ECharts is an optional add-on: one more entry in the registry.
+const bricks = {
+  ...withLabels(builtinBricks, brickLabelsJa),
+  echarts: { ...echartsBrick, description: 'Apache ECharts の任意のチャート' },
+};
 
 function loadLayout(): DashboardDoc {
   try {

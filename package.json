@@ -18,7 +18,8 @@
     "responsive",
     "react",
     "typescript",
-    "data-visualization"
+    "data-visualization",
+    "echarts"
   ],
   "repository": {
     "type": "git",
@@ -86,6 +87,26 @@
         "default": "./dist/bricks/index.cjs"
       }
     },
+    "./echarts": {
+      "import": {
+        "types": "./dist/echarts/index.d.ts",
+        "default": "./dist/echarts/index.js"
+      },
+      "require": {
+        "types": "./dist/echarts/index.d.cts",
+        "default": "./dist/echarts/index.cjs"
+      }
+    },
+    "./echarts/core": {
+      "import": {
+        "types": "./dist/echarts/core.d.ts",
+        "default": "./dist/echarts/core.js"
+      },
+      "require": {
+        "types": "./dist/echarts/core.d.cts",
+        "default": "./dist/echarts/core.cjs"
+      }
+    },
     "./locales/ja": {
       "import": {
         "types": "./dist/locales/ja.d.ts",
@@ -120,13 +141,17 @@
   },
   "peerDependencies": {
     "react": "^18.0.0 || ^19.0.0",
-    "react-dom": "^18.0.0 || ^19.0.0"
+    "react-dom": "^18.0.0 || ^19.0.0",
+    "echarts": ">=5.4.0"
   },
   "peerDependenciesMeta": {
     "react": {
       "optional": true
     },
     "react-dom": {
+      "optional": true
+    },
+    "echarts": {
       "optional": true
     }
   },
@@ -137,6 +162,7 @@
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitest/coverage-v8": "^3.0.5",
+    "echarts": "^6.1.0",
     "esbuild": "^0.28.2",
     "eslint": "^9.20.0",
     "jsdom": "^26.0.0",

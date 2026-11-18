@@ -16,6 +16,7 @@ export default defineConfig({
       { find: /^vizbrix\/react$/, replacement: src('react/index.ts') },
       { find: /^vizbrix\/charts$/, replacement: src('charts/index.ts') },
       { find: /^vizbrix\/bricks$/, replacement: src('bricks/index.tsx') },
+      { find: /^vizbrix\/echarts$/, replacement: src('echarts/index.ts') },
       { find: /^vizbrix\/locales\/ja$/, replacement: src('locales/ja.ts') },
       { find: /^vizbrix\/styles\.css$/, replacement: src('styles.css') },
       { find: /^vizbrix$/, replacement: src('core/index.ts') },

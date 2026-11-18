@@ -18,6 +18,7 @@ src/react     the adapter
   Shell.tsx       brick chrome shared by both
 src/charts    client components: LineChart, BarChart, figures, DataTable
 src/bricks    server-safe registry mapping brick types onto src/charts
+src/echarts   optional adapter: an ECharts brick/component themed from the CSS tokens
 ```
 
 `vizbrix/bricks` imports the charts through the package's own `vizbrix/charts` export, which is kept

@@ -18,7 +18,7 @@ export async function open(page: Page, query = ''): Promise<void> {
 
 /** The layout the playground persisted, as stored JSON. */
 export async function stored(page: Page): Promise<{ items: { id: string; x: number; y: number; w: number; h: number; props?: Record<string, unknown> }[]; layouts: Record<string, Record<string, unknown>> }> {
-  return page.evaluate(() => JSON.parse(localStorage.getItem('vizbrix-playground:v4') ?? '{}'));
+  return page.evaluate(() => JSON.parse(localStorage.getItem('vizbrix-playground:v5') ?? '{}'));
 }
 
 export const isMobile = (page: Page): boolean => (page.viewportSize()?.width ?? 1000) < 700;
