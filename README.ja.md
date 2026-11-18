@@ -77,13 +77,13 @@ React 18 / 19 に対応しています。スタイルは `import 'vizbrix/styles
 
 | エントリ | 中身 | gzip |
 |---|---|---|
-| `vizbrix` | ドキュメントモデル、読み込み/保存、ジオメトリ、ストア（フレームワーク非依存） | 約 10 KB |
-| `vizbrix/react` | `<Dashboard>` — 表示とエディタ | 約 13 KB |
+| `vizbrix` | ドキュメントモデル、読み込み/保存、ジオメトリ、ストア（フレームワーク非依存） | 約 12 KB |
+| `vizbrix/react` | `<Dashboard>` — 表示とエディタ | 約 18 KB |
 | `vizbrix/react/static` | `<DashboardStatic>` — フックなしの Server Component | 約 3 KB |
-| `vizbrix/charts` | チャートと数値タイル。単体でも使えます | 約 13 KB |
-| `vizbrix/bricks` | 組み込みブリックのレジストリ | 約 2 KB |
+| `vizbrix/charts` | チャートと数値タイル。単体でも使えます | 約 16 KB |
+| `vizbrix/bricks` | 組み込みブリックのレジストリ | 約 3 KB |
 | `vizbrix/locales/ja` | 日本語の文言とブリック名 | 約 2 KB |
-| `vizbrix/styles.css` | テーマ（ライト/ダーク） | 約 6 KB |
+| `vizbrix/styles.css` | テーマ（ライト/ダーク） | 約 7 KB |
 
 ---
 
@@ -100,7 +100,7 @@ React 18 / 19 に対応しています。スタイルは `import 'vizbrix/styles
 | `donut` / `segmented` | 構成比 | `data` `label` `value` `format` `centerLabel` |
 | `barlist` | ランキング | `data` `label` `value` `limit` |
 | `meter` | 目標に対する進捗 | `value` `max` `status` `statusLabel` |
-| `table` | 並べ替え可能な表。行は仮想化 | `data` `columns` |
+| `table` | 並べ替え・検索・列幅変更ができる表。行は仮想化 | `data` `columns` `searchable` |
 | `text` | 見出し・注記（枠なし） | `text` `variant` |
 
 `data` には行の配列を直接書くか、`<Dashboard data={…}>` に渡したデータセットの**名前**を書きます。
@@ -118,6 +118,17 @@ import { ja, brickLabelsJa } from 'vizbrix/locales/ja';
 <Dashboard bricks={withLabels(builtinBricks, brickLabelsJa)} locale={ja} … />
 ```
 
+折れ線・棒には `references: [{ value: 2300, label: '月次目標' }]` で基準線を引けます。折れ線は
+`zoom: true` でドラッグによる期間ズームができます。表の列は `kind` で見せ方を選べます:
+
+```ts
+columns: [
+  { key: 'name', kind: 'link', href: '/deals/{id}' },                      // {列名} は行の値に置換
+  { key: 'stage', kind: 'badge', tones: { 契約: 'good', 見積: 'warning' } },
+  { key: 'probability', kind: 'progress' },
+]
+```
+
 ### 自前のブリック
 
 ```tsx
@@ -127,6 +138,10 @@ const map = defineBrick<{ data?: string; zoom?: number }>({
   label: '地図',                       // 「追加」メニューに出る名前
   defaults: { w: 600, h: 400, title: '拠点', props: { zoom: 5 } },
   flush: true,                         // 本文の余白をなくす
+  settings: [                          // 設定パネルの項目（任意）
+    { key: 'data', type: 'dataset' },
+    { key: 'zoom', type: 'number', label: 'ズーム' },
+  ],
   render: ({ props, data }) => <StoreMap points={resolveData(props.data, data)} zoom={props.zoom} />,
 });
 
@@ -175,11 +190,21 @@ import { LineChart, BarChart, StatTile, DataTable } from 'vizbrix/charts';
 | 追加・複製・削除 | 「追加」メニュー／Ctrl+D／Delete |
 | 重ね順 | `]` で最前面、`[` で最背面 |
 | 元に戻す・やり直す | Ctrl+Z／Ctrl+Shift+Z（連続したキー操作は 1 手にまとまります） |
+| 範囲選択 | 空いた場所からドラッグ。Ctrl+A ですべて選択 |
+| 整列・等間隔 | 2 つ以上選択するとツールバーに表示 |
+| コピー＆ペースト | Ctrl+C／Ctrl+V（同じページの別ダッシュボードにも貼れます） |
 | キャンセル | ドラッグ中に Esc |
 
 各ブリックの「⋯」メニューからは、名前の変更、**数値での位置・サイズ指定**（ドラッグなしで配置
-できる代替手段）、幅の追従方法、ロック、削除ができます。`onEditItem` を渡すと「設定…」が加わるので、
-ブリックの設定画面はアプリ側の UI で開けます。
+できる代替手段）、幅の追従方法、ロック、削除ができます。
+
+**設定パネル。** メニューの「設定…」（またはブリックのダブルクリック）で、データセット・軸・系列・
+書式などを画面上で選べます。変更はその場でブリックに反映されます。項目はブリック定義の `settings`
+から生成されるので、自前のブリックにも同じパネルが付きます。アプリ独自の設定画面を使いたい場合は
+`onEditItem` を渡すと、そちらが呼ばれます。
+
+**重なりの扱い。** 既定では重なりを許します。`overlap="avoid"` にすると、ドロップしたブリックは
+最寄りの空き位置に収まり、隣を覆うリサイズは拒否されます。
 
 ドラッグ中は対象要素のスタイルを直接書き換えるだけで、React の再レンダリングは起きません。確定は
 離した瞬間の 1 回で、変更のあったブリックだけが再描画されます。編集不可 (`editable` なし) の
@@ -195,10 +220,34 @@ import { LineChart, BarChart, StatTile, DataTable } from 'vizbrix/charts';
 | `toolbar` / `header` | ツールバーの表示、左側に置くタイトルやフィルタ |
 | `snap` | `{ grid, items, threshold }` または `false` |
 | `locale` / `theme` | 文言（既定は英語）、`'light' \| 'dark' \| 'auto'` |
-| `onEditItem` | ブリックメニューの「設定…」 |
-| `ref` | `add` `remove` `update` `undo` `redo` `getValue` `reveal` `store` |
+| `status` / `onRetry` | データセットごとの読み込み状態（下記） |
+| `onSelect` | ブリック内の点・棒・セル・行がクリックされた |
+| `exportable` | 表示モードで CSV／画像のダウンロードを出す |
+| `overlap` | `'allow'`（既定）または `'avoid'` |
+| `onEditItem` | 標準の設定パネルの代わりに呼ばれる |
+| `ref` | `add` `remove` `update` `undo` `redo` `getValue` `reveal` `inspect` `toCsv` `exportCsv` `exportPng` `store` |
 
 ---
+
+## データの状態・クリック・エクスポート
+
+```tsx
+<Dashboard
+  data={{ sales: salesQuery.data }}
+  status={{ sales: salesQuery.isFetching ? 'loading' : salesQuery.isError ? 'error' : undefined }}
+  onRetry={(dataset) => refetch(dataset)}
+  onSelect={({ item, datum, index }) => router.push(`/deals?month=${datum.month}`)}
+  exportable
+/>
+```
+
+- **読み込み中**: データがまだ無ければプレースホルダ、すでにあれば前の描画を薄く残します
+  （レイアウトが跳ねず、スケルトンが点滅しません）。**失敗**: メッセージと再試行ボタンを表示します。
+- **クリック**: チャートの点・棒・セル、構成比の要素、表の行が、元の行 (`datum`) とその位置
+  (`index`) を返します。キーボードでは Enter です。編集モード中は発火しません。
+- **エクスポート**: `exportable` でブリックにホバーメニューが付き、CSV（Excel で開ける BOM 付き
+  UTF-8）と PNG を保存できます。`ref` からも呼べます。印刷時は編集用の UI が隠れます。
+  画像出力は SVG の `foreignObject` 描画を使うため、Safari では動作しない場合があります（CSV は可）。
 
 ## 保存と読み込み
 
@@ -257,8 +306,7 @@ export default async function Page() {
 
 ## やらないこと
 
-- **詰め直し・押し出し。** ブリックは置いた場所に留まり、重なりも許されます。整列はスナップが助けます。
-- **ブリック設定の汎用エディタ。** 設定 UI はアプリごとに違うため、`onEditItem` で委ねます。
+- **詰め直し・押し出し。** ブリックは置いた場所に留まります。他のブリックを動かすことはしません。
 - **データ取得。** `data` に渡すところまでがアプリの責務です。
 - **二軸グラフ・無限キャンバス・共同編集。**
 
@@ -268,6 +316,7 @@ export default async function Page() {
 pnpm install
 pnpm check          # 型チェック + lint + テスト
 pnpm build && pnpm size && pnpm smoke
+pnpm e2e --project=chromium   # 実ブラウザでのテスト（CI では Firefox・WebKit・タッチも実行）
 
 cd examples/playground && pnpm install && pnpm dev
 ```

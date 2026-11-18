@@ -71,3 +71,26 @@ jobs:
         working-directory: examples/playground
       - run: pnpm build
         working-directory: examples/playground
+
+  e2e:
+    name: browsers (chromium, firefox, webkit, touch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
+        working-directory: examples/playground
+      - run: pnpm exec playwright install --with-deps
+      - run: pnpm e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: test-results

@@ -5,12 +5,12 @@ import { gzipSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 
 const budgets = {
-  'dist/index.js': 12,
-  'dist/react/index.js': 16,
+  'dist/index.js': 14,
+  'dist/react/index.js': 20,
   'dist/react/static.js': 4,
   'dist/charts/index.js': 18,
   'dist/bricks/index.js': 5,
-  'dist/locales/ja.js': 2,
+  'dist/locales/ja.js': 3,
 };
 
 let failed = false;

@@ -49,3 +49,6 @@ yarn.lock
 .cache/
 .npm/
 .eslintcache 
+# Playwright
+test-results/
+playwright-report/

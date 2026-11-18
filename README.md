@@ -78,13 +78,13 @@ Works with React 18 and 19. Load the theme with `import 'vizbrix/styles.css'`.
 
 | Entry | Contents | gzip |
 |---|---|---|
-| `vizbrix` | Document model, load/save, geometry, store — framework-free | ~10 KB |
-| `vizbrix/react` | `<Dashboard>` — viewer and editor | ~13 KB |
+| `vizbrix` | Document model, load/save, geometry, store — framework-free | ~12 KB |
+| `vizbrix/react` | `<Dashboard>` — viewer and editor | ~18 KB |
 | `vizbrix/react/static` | `<DashboardStatic>` — a hook-free Server Component | ~3 KB |
-| `vizbrix/charts` | Charts and figures; usable on their own | ~13 KB |
-| `vizbrix/bricks` | The built-in brick registry | ~2 KB |
+| `vizbrix/charts` | Charts and figures; usable on their own | ~16 KB |
+| `vizbrix/bricks` | The built-in brick registry | ~3 KB |
 | `vizbrix/locales/ja` | Japanese strings and brick names | ~2 KB |
-| `vizbrix/styles.css` | Theme, light and dark | ~6 KB |
+| `vizbrix/styles.css` | Theme, light and dark | ~7 KB |
 
 ---
 
@@ -101,7 +101,7 @@ Works with React 18 and 19. Load the theme with `import 'vizbrix/styles.css'`.
 | `donut` / `segmented` | Share of a whole | `data` `label` `value` `format` `centerLabel` |
 | `barlist` | Rankings | `data` `label` `value` `limit` |
 | `meter` | Progress toward a target | `value` `max` `status` `statusLabel` |
-| `table` | Sortable, virtualized rows | `data` `columns` |
+| `table` | Sortable, searchable, resizable; virtualized rows | `data` `columns` `searchable` |
 | `text` | Headings and notes (no card) | `text` `variant` |
 
 `data` is either inline rows or the **name** of a dataset passed to `<Dashboard data={…}>`. `stat` and
@@ -109,6 +109,17 @@ Works with React 18 and 19. Load the theme with `import 'vizbrix/styles.css'`.
 
 `format` is a storable value: `'auto'` (switches to compact notation from 10,000), `'number'`,
 `'integer'`, `'compact'`, `'percent'`, `'currency:USD'`, or `Intl.NumberFormatOptions`.
+
+Line and bar charts take `references: [{ value: 2300, label: 'Monthly target' }]` for threshold
+lines; line charts take `zoom: true` for drag-to-zoom. Table columns choose a presentation with `kind`:
+
+```ts
+columns: [
+  { key: 'name', kind: 'link', href: '/deals/{id}' },                      // {field} comes from the row
+  { key: 'stage', kind: 'badge', tones: { Won: 'good', Quote: 'warning' } },
+  { key: 'probability', kind: 'progress' },
+]
+```
 
 ### Your own bricks
 
@@ -119,6 +130,10 @@ const map = defineBrick<{ data?: string; zoom?: number }>({
   label: 'Map',                        // name in the Add menu
   defaults: { w: 600, h: 400, title: 'Stores', props: { zoom: 5 } },
   flush: true,                         // no body padding
+  settings: [                          // fields for the settings panel (optional)
+    { key: 'data', type: 'dataset' },
+    { key: 'zoom', type: 'number', label: 'Zoom' },
+  ],
   render: ({ props, data }) => <StoreMap points={resolveData(props.data, data)} zoom={props.zoom} />,
 });
 
@@ -169,11 +184,21 @@ With `editable`, the toolbar gains an Edit button. In edit mode:
 | Add, duplicate, remove | The Add menu, Ctrl+D, Delete |
 | Stacking | `]` to front, `[` to back |
 | Undo / redo | Ctrl+Z / Ctrl+Shift+Z (a run of key presses is one step) |
+| Marquee select | Drag from empty canvas. Ctrl+A selects all |
+| Align / distribute | Appears in the toolbar with two or more bricks selected |
+| Copy / paste | Ctrl+C / Ctrl+V (also across dashboards on the same page) |
 | Cancel | Esc while dragging |
 
 Each brick's "⋯" menu offers renaming, **numeric position and size** (a way to place bricks without
-dragging), the width behaviour, locking and removal. Pass `onEditItem` to add an "Edit…" entry that
-opens your own settings UI.
+dragging), the width behaviour, locking and removal.
+
+**Settings panel.** "Edit…" in the menu (or a double-click on the brick) opens a panel for choosing
+the dataset, axes, series, format and so on; changes apply to the brick as you make them. The panel
+is generated from the brick definition's `settings`, so your own bricks get it too. To use your own
+settings UI instead, pass `onEditItem`.
+
+**Overlap.** Allowed by default. With `overlap="avoid"` a dropped brick lands in the nearest free
+spot and a resize that would cover a neighbour is refused.
 
 While dragging, styles are written straight to the dragged elements and React does not re-render.
 The change commits once, on release, and only the bricks that changed render again. A dashboard
@@ -189,10 +214,34 @@ without `editable` registers no event listeners at all.
 | `toolbar` / `header` | Show the toolbar; content for its left side (title, filters) |
 | `snap` | `{ grid, items, threshold }` or `false` |
 | `locale` / `theme` | Strings (English by default); `'light' \| 'dark' \| 'auto'` |
-| `onEditItem` | "Edit…" in the brick menu |
-| `ref` | `add` `remove` `update` `undo` `redo` `getValue` `reveal` `store` |
+| `status` / `onRetry` | Loading state per dataset (below) |
+| `onSelect` | A point, bar, cell or row inside a brick was clicked |
+| `exportable` | Offer CSV / image download in view mode |
+| `overlap` | `'allow'` (default) or `'avoid'` |
+| `onEditItem` | Called instead of the built-in settings panel |
+| `ref` | `add` `remove` `update` `undo` `redo` `getValue` `reveal` `inspect` `toCsv` `exportCsv` `exportPng` `store` |
 
 ---
+
+## Data states, clicks and export
+
+```tsx
+<Dashboard
+  data={{ sales: salesQuery.data }}
+  status={{ sales: salesQuery.isFetching ? 'loading' : salesQuery.isError ? 'error' : undefined }}
+  onRetry={(dataset) => refetch(dataset)}
+  onSelect={({ item, datum, index }) => router.push(`/deals?month=${datum.month}`)}
+  exportable
+/>
+```
+
+- **Loading**: a placeholder while there is no data yet; once there is, the previous render stays,
+  dimmed (no layout jump, no skeleton flash). **Error**: a message and a retry button.
+- **Clicks**: chart points, bars and cells, parts of a whole, and table rows report the source row
+  (`datum`) and its position (`index`). Enter does the same from the keyboard. Nothing fires while editing.
+- **Export**: `exportable` adds a hover menu to each brick for CSV (UTF-8 with a BOM, so spreadsheets
+  open it correctly) and PNG. Both are on `ref` too. Editing chrome is hidden when printing.
+  Image export draws through an SVG `foreignObject`, which Safari may refuse; CSV works everywhere.
 
 ## Saving and loading
 
@@ -250,8 +299,7 @@ Every colour, radius and font is a CSS custom property.
 
 ## Non-goals
 
-- **Compaction or pushing.** Bricks stay where they are put, and may overlap. Snapping keeps things tidy.
-- **A generic settings editor for bricks.** Settings UIs differ per app; `onEditItem` hands that over.
+- **Compaction or pushing.** Bricks stay where they are put; moving one never moves another.
 - **Data fetching.** Getting data into `data` is the app's job.
 - **Dual-axis charts, an infinite canvas, real-time collaboration.**
 
@@ -261,6 +309,7 @@ Every colour, radius and font is a CSS custom property.
 pnpm install
 pnpm check          # typecheck + lint + tests
 pnpm build && pnpm size && pnpm smoke
+pnpm e2e --project=chromium   # real-browser tests (CI also runs Firefox, WebKit and touch)
 
 cd examples/playground && pnpm install && pnpm dev
 ```

@@ -111,7 +111,8 @@
     "check": "pnpm typecheck && pnpm lint && pnpm test",
     "prepublishOnly": "pnpm check && pnpm build",
     "size": "node scripts/check-entry-sizes.mjs",
-    "smoke": "node scripts/smoke-pack.mjs"
+    "smoke": "node scripts/smoke-pack.mjs",
+    "e2e": "playwright test"
   },
   "publishConfig": {
     "access": "public",
@@ -130,6 +131,7 @@
     }
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.2.0",
     "@types/react": "^19.0.8",

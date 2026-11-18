@@ -108,7 +108,7 @@ export function App() {
           data={data}
           status={status}
           exportable
-          overlap="avoid"
+          overlap={new URLSearchParams(location.search).get('overlap') === 'allow' ? 'allow' : 'avoid'}
           onSelect={({ item, datum }) => setPicked(`${item.title ?? item.type}: ${JSON.stringify(datum)}`)}
           locale={ja}
           editable
