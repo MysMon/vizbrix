@@ -1,335 +1,268 @@
 # vizbrix
 
-**Free-placement dashboard layout for React. Pixel-precise placement that actually reflows.**
+**Dashboard bricks for React. A free-placement layout that actually reflows, the charts and figures to fill it, and an editor to arrange them.**
 
 [![CI](https://github.com/MysMon/vizbrix/actions/workflows/ci.yml/badge.svg)](https://github.com/MysMon/vizbrix/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
-[![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen)](#size)
-[![types: included](https://img.shields.io/badge/types-included-blue)](#typescript)
-[![React 18 | 19](https://img.shields.io/badge/react-18%20%7C%2019-61dafb)](#install)
 
-Widgets go exactly where you drop them — arbitrary x/y, any size, overlapping if you want — and
-stay sensible when the container resizes.
+*[日本語の README →](./README.ja.md)*
 
-*[日本語版 README →](./README.ja.md)*
+```tsx
+import { createDashboard } from 'vizbrix';
+import { Dashboard } from 'vizbrix/react';
+import { builtinBricks } from 'vizbrix/bricks';
+import 'vizbrix/styles.css';
+
+const layout = createDashboard({
+  items: [
+    { id: 'mrr', type: 'stat', title: 'MRR', x: 0, y: 0, w: 300, h: 148,
+      props: { data: 'mrr', format: 'currency:USD', deltaLabel: 'vs last month' } },
+    { id: 'sales', type: 'line', title: 'Revenue', x: 300, y: 0, w: 900, h: 320,
+      props: { data: 'sales', x: 'month', series: ['actual', 'plan'] } },
+  ],
+});
+
+export function Page() {
+  const [doc, setDoc] = useState(layout);
+  return (
+    <Dashboard
+      value={doc}
+      onChange={setDoc}          // once per finished drag, once per undo
+      bricks={builtinBricks}
+      data={{ mrr: { value: 62_380, delta: 0.057 }, sales: rows }}
+      editable                   // adds Edit, Add and undo/redo
+    />
+  );
+}
+```
+
+That is a dashboard with a KPI tile and a line chart that users can drag and resize, and that
+rearranges itself into two columns on a tablet and one on a phone. It has no runtime dependencies.
 
 ---
 
-## Why
+## The idea
 
-Dashboard layout tools usually come in one of two shapes, and both make free placement a
-second-class citizen.
+**A dashboard is a set of bricks.** A brick is JSON — a `type`, a position, and `props`. How a type
+renders comes from a registry (`bricks`); what it shows comes from `data`. The layout can go straight
+into a database, and the data can change underneath it.
 
-**Column-grid engines** store position as integer cell coordinates: `x, y, w, h` mean *columns and
-rows*. That is not a styling default — it is the storage model, the collision model and the
-persistence format at once, so free placement is not reachable by configuration. The "free" modes
-such engines offer are flags that *switch off* core behaviour (skip compaction, give up collision
-handling) rather than express a different model.
+**Free placement is the storage format.** A position is a rectangle `x, y, w, h` against a design width
+(1200 by default), not a column index. The grid is not the model; it is one of the things a drag can
+snap to.
 
-**Freeform transform layers** do arbitrary pixel placement beautifully — and ship no dashboard
-semantics: no collision policy, no persistence schema, no responsive strategy, no accessibility.
-Teams hand-assemble them into canvas editors.
+**And it still reflows.** Free placement usually means "it just shrinks". Here:
 
-**vizbrix is the middle.** Positions persist as continuous, resolution-independent *expressions*;
-a 12-column grid is one snap provider among several, toggled at interaction time and never baked
-into the model; responsiveness is a computed property of each item rather than a hand-authored
-layout array per breakpoint; and the serialized document is a versioned contract you can put in a
-database.
+- Rectangles are stored as **tiles**: neighbours share an edge, and the gutter (`gap`) is subtracted
+  when rendering. Gutters therefore stay the same pixel size at every width.
+- Each brick chooses how it follows the width (`pin`): `scale` (default, keeps its share), `left` /
+  `right` (fixed width, pinned to an edge), `stretch` (pinned both sides), or `center`.
+- Below a breakpoint the layout is **derived automatically** by flowing bricks, in reading order,
+  into N columns. Move something at that width and the arrangement is saved for that width.
+- Breakpoints respond to **the dashboard's own width** (container queries), not the viewport, so
+  they behave inside sidebars and split panes.
 
-The one-line version: **free placement that reflows, not free placement that shrinks.**
+**The layout is static CSS.** Every variant compiles to rules like `left: calc(25% + 4px)`. A server
+can render a correct first paint without knowing the screen size, and no JavaScript runs to lay
+anything out.
 
 ---
 
 ## Install
 
 ```sh
-npm install vizbrix      # pnpm add vizbrix · yarn add vizbrix
+npm install vizbrix
 ```
 
-React 18 or 19 is an **optional** peer dependency — the core engine has no React dependency at
-all, so a Vue/Svelte/vanilla adapter needs nothing but the public core surface.
+Works with React 18 and 19. Load the theme with `import 'vizbrix/styles.css'`.
 
-## 60 seconds
+| Entry | Contents | gzip |
+|---|---|---|
+| `vizbrix` | Document model, load/save, geometry, store — framework-free | ~10 KB |
+| `vizbrix/react` | `<Dashboard>` — viewer and editor | ~13 KB |
+| `vizbrix/react/static` | `<DashboardStatic>` — a hook-free Server Component | ~3 KB |
+| `vizbrix/charts` | Charts and figures; usable on their own | ~11 KB |
+| `vizbrix/bricks` | The built-in brick registry | ~2 KB |
+| `vizbrix/locales/ja` | Japanese strings and brick names | ~2 KB |
+| `vizbrix/styles.css` | Theme, light and dark | ~5 KB |
+
+---
+
+## Built-in bricks
+
+| type | For | Main props |
+|---|---|---|
+| `stat` | A headline number, its change, a sparkline | `value` `format` `delta` `deltaLabel` `upIsGood` `trend` |
+| `line` / `area` | Change over time; multi-series, stacked, smoothed | `data` `x` `series` `stacked` `curve` `xType` `yFormat` |
+| `bar` | Comparing categories; grouped/stacked, vertical/horizontal | `data` `x` `series` `stacked` `horizontal` `labels` |
+| `donut` / `segmented` | Share of a whole | `data` `label` `value` `format` `centerLabel` |
+| `barlist` | Rankings | `data` `label` `value` `limit` |
+| `meter` | Progress toward a target | `value` `max` `status` `statusLabel` |
+| `table` | Sortable, virtualized rows | `data` `columns` |
+| `text` | Headings and notes (no card) | `text` `variant` |
+
+`data` is either inline rows or the **name** of a dataset passed to `<Dashboard data={…}>`. `stat` and
+`meter` read `value`, `delta` and friends from the named object.
+
+`format` is a storable value: `'auto'` (switches to compact notation from 10,000), `'number'`,
+`'integer'`, `'compact'`, `'percent'`, `'currency:USD'`, or `Intl.NumberFormatOptions`.
+
+### Your own bricks
 
 ```tsx
-import { defineLayout } from 'vizbrix';
-import { Vizbrix } from 'vizbrix/react';
+import { defineBrick, resolveData } from 'vizbrix/react';
 
-const layout = defineLayout({
-  container: { base: { width: 1200 }, sizes: { md: { maxWidth: 900 } } },
-  items: [
-    { id: 'revenue', x: 0, y: 0, w: 580, h: 260 },
-    { id: 'signups', x: 620, y: 0, w: 580, h: 260, anchor: { x: 'end' } },
-    { id: 'funnel', x: 0, y: 300, w: 1200, h: 320, anchor: { x: 'both' } },
-  ],
+const map = defineBrick<{ data?: string; zoom?: number }>({
+  label: 'Map',                        // name in the Add menu
+  defaults: { w: 600, h: 400, title: 'Stores', props: { zoom: 5 } },
+  flush: true,                         // no body padding
+  render: ({ props, data }) => <StoreMap points={resolveData(props.data, data)} zoom={props.zoom} />,
 });
 
-export function Dashboard() {
-  return (
-    <Vizbrix defaultLayout={layout} mode="edit" onLayoutChange={(doc) => save(doc)}>
-      {(item, ui) => (
-        <article className="card">
-          <header {...ui.handleProps}>{item.id}</header>
-          <button {...ui.moveButtonProps}>Move</button>
-          <Widget id={item.id} />
-        </article>
-      )}
-    </Vizbrix>
-  );
+<Dashboard bricks={{ ...builtinBricks, map }} … />
+```
+
+Types missing from the registry go to `renderItem`; failing that, a placeholder. A brick that throws
+while rendering shows an error in its own card and leaves the rest of the dashboard alone.
+
+---
+
+## Charts on their own
+
+`vizbrix/charts` does not need a dashboard. Charts draw to the size of their parent, so place them in
+an element with a height or pass `height`.
+
+```tsx
+import { LineChart, BarChart, StatTile, DataTable } from 'vizbrix/charts';
+
+<LineChart data={rows} x="date" series={[{ key: 'pv', label: 'Page views' }, 'users']} height={280} />
+<BarChart data={rows} x="region" series={['sales']} horizontal labels height={240} />
+<StatTile label="Customers" value={1284} delta={0.042} deltaLabel="vs last month" />
+<DataTable data={deals} columns={[{ key: 'name' }, { key: 'amount', format: 'currency:USD' }]} height={360} />
+```
+
+- One y-axis. A series' colour follows its declared position, so hiding one never repaints the rest.
+- Lines get a crosshair that snaps to the nearest x and a tooltip listing every series; on bars the
+  whole category band is the hover target. Arrow keys read the same values.
+- Line and bar charts switch to a table view; part-to-whole charts print every amount in the legend.
+  Nothing is identified by colour alone.
+- Points are downsampled to the pixels available (LTTB), so a 100k-point series costs about what a
+  1k-point one does. `DataTable` mounts only the rows in view.
+- The default palette's order is validated so adjacent series stay distinguishable under colour
+  vision deficiency, in both light and dark.
+
+---
+
+## Editing
+
+With `editable`, the toolbar gains an Edit button. In edit mode:
+
+| Action | How |
+|---|---|
+| Move | Drag, or arrow keys (Alt for single units) |
+| Resize | Eight handles, or Shift + arrow keys |
+| Multi-select | Shift (or Ctrl/⌘) + click; the selection moves together |
+| Snap | Sibling edges and centres, canvas edges, an 8px grid. Hold Ctrl/⌘ to bypass |
+| Add, duplicate, remove | The Add menu, Ctrl+D, Delete |
+| Stacking | `]` to front, `[` to back |
+| Undo / redo | Ctrl+Z / Ctrl+Shift+Z (a run of key presses is one step) |
+| Cancel | Esc while dragging |
+
+Each brick's "⋯" menu offers renaming, **numeric position and size** (a way to place bricks without
+dragging), the width behaviour, locking and removal. Pass `onEditItem` to add an "Edit…" entry that
+opens your own settings UI.
+
+While dragging, styles are written straight to the dragged elements and React does not re-render.
+The change commits once, on release, and only the bricks that changed render again. A dashboard
+without `editable` registers no event listeners at all.
+
+### Main props
+
+| Prop | |
+|---|---|
+| `value` / `defaultValue` / `onChange(doc, meta)` | Controlled or uncontrolled; `meta.reason` is `move`, `resize`, `add`, `undo`, … |
+| `bricks` / `data` / `renderItem` | Registry, datasets, fallback renderer |
+| `editable` / `editing` / `defaultEditing` / `onEditingChange` | Whether editing is allowed, and edit mode |
+| `toolbar` / `header` | Show the toolbar; content for its left side (title, filters) |
+| `snap` | `{ grid, items, threshold }` or `false` |
+| `locale` / `theme` | Strings (English by default); `'light' \| 'dark' \| 'auto'` |
+| `onEditItem` | "Edit…" in the brick menu |
+| `ref` | `add` `remove` `update` `undo` `redo` `getValue` `reveal` `store` |
+
+---
+
+## Saving and loading
+
+```ts
+import { parseDashboard, serializeDashboard } from 'vizbrix';
+
+await save(serializeDashboard(doc));        // stable key order: same content, same bytes
+
+const { doc, ok, issues } = parseDashboard(await load());
+if (!ok) report(issues);                     // e.g. [{ path: 'items[3].w', message: '…', severity: 'error' }]
+```
+
+`parseDashboard` **never throws**. Even for corrupt JSON it returns a renderable document and the list
+of what it repaired. Documents carry a `version`, and unknown keys survive a round trip, so data
+written by a newer release is not damaged by an older one.
+
+Cell-based grid layouts (`{ i, x, y, w, h }`) convert with `importFromGrid(cells, { cols, rowHeight })`.
+
+## Server rendering
+
+```tsx
+import { DashboardStatic } from 'vizbrix/react/static';   // no "use client"
+import { builtinBricks } from 'vizbrix/bricks';
+
+export default async function Page() {
+  return <DashboardStatic id="sales" value={await loadLayout()} bricks={builtinBricks} data={await loadData()} />;
 }
 ```
 
-`defineLayout` accepts flat pixel sugar (`x, y, w, h` in base-design space) and normalizes it into
-the canonical document: anchors re-encoded at the base width, fractional z-keys generated, lengths
-canonicalized, items sorted. Drag a card and `onLayoutChange(doc, tx)` fires once per gesture with
-the new document and the transaction that produced it.
+`<DashboardStatic>` is a Server Component with no hooks or handlers, and emits the same markup as
+`<Dashboard>`. Because the layout is CSS, the only code that runs on the client is the charts' own.
 
-Read-only is a different entry point, not a prop:
+## Theming
 
-```tsx
-import { VizbrixView } from 'vizbrix/react/view';   // no sensors, no history
-<VizbrixView layout={doc}>{(item) => <Widget id={item.id} />}</VizbrixView>
+Every colour, radius and font is a CSS custom property.
+
+```css
+:root {
+  --vbx-accent: #0f766e;
+  --vbx-radius: 8px;
+  --vbx-series-1: #0f766e;   /* replace the series colours as an ordered set */
+}
 ```
 
-```tsx
-import { VizbrixStatic } from 'vizbrix/react/static'; // RSC-safe, no "use client"
-<VizbrixStatic layout={doc}>{(item) => <Widget id={item.id} />}</VizbrixStatic>
-```
+`theme="dark"` (or `data-vbx-theme="dark"` on an ancestor) selects dark; `"auto"` follows the OS.
 
-**[Getting started →](./docs/getting-started.md)**
+## Accessibility
 
----
-
-## What you get
-
-- **Free placement as the storage primitive.** Positions are affine expressions in the container
-  extent (`a·W + b`), not column indices. Snap to sibling edges and centres, to equal gaps, to
-  container edges — or to a grid (`snap={{ grid: 8 }}`, off by default). Hold **Cmd/Ctrl** to
-  bypass snapping mid-gesture; the modifier is configurable via `snap={{ bypassKey: 'alt' }}`.
-  Snapping is an interaction, so turning it off never changes what is stored.
-
-- **Constraint anchors that reflow.** Each axis carries one of `start | end | both | center | scale`
-  — pin to a side, stretch between both, stay centred, or scale proportionally. Resolution is a
-  pure, total, measurement-free function, so the same layout is correct at 1440px and 380px without
-  a second authored layout. [Responsive guide →](./docs/responsive.md)
-
-- **SSR-correct by construction.** Every placement compiles to static CSS (`left: calc(50% + 12px)`,
-  `inset`, `@container (max-width: …)`), so the first paint is right with **zero JavaScript** and no
-  measured width. `vizbrix/react/static` is a real React Server Component entry — no `"use client"`
-  banner, no hooks, no effects, no event handlers. [SSR guide →](./docs/ssr.md)
-
-- **Dragging one widget never re-renders another.** Layout lives in an external store with per-item
-  channels; a drag frame touches the dragged node's `transform` and the overlay's guide lines, both
-  imperatively — zero sibling re-renders during a drag, exactly one item render at commit, under
-  StrictMode too. There is no compaction pass, so the O(n²) class of layout bug does not exist here.
-
-- **Accessible, not "accessible later".** Full keyboard placement (grab/nudge/resize/snap-jump/
-  cancel/z-order), `role="button"` + `aria-roledescription` + off-screen instructions, two live regions
-  (assertive for gesture transitions, polite for position status), and a **tap-to-place** affordance
-  that satisfies **WCAG 2.2 SC 2.5.7 (Dragging Movements, AA)** — every drag has a single-pointer,
-  non-drag alternative. English is built in, Japanese ships as `vizbrix/locales/ja`, and strings are
-  *functions*, so translators can reorder clauses rather than fill in a fixed template.
-  [Accessibility guide →](./docs/accessibility.md)
-
-- **A persistence contract you can bet a product on.** `{ version, compat, container, items }` with
-  `load()` that **never throws** for any input — it returns a `LoadOutcome` with arms
-  `ok | migrated | forward-degraded | incompatible | invalid`. Unknown keys from a newer writer are
-  parked in `$unknown` and re-emitted verbatim, `serialize()` has stable key order so layout diffs
-  are reviewable, and the migration runner reports every dropped field with a path.
-  [Persistence guide →](./docs/persistence.md)
-
-- **Undo/redo from v0.1.** Inverse-op transactions, one gesture = one entry, human-readable labels
-  ("Undo move: revenue (md)"), rebase-before-invert, blocked in view mode, and no entry at all for a
-  cancelled or no-op drag. The ops are CRDT-shaped (fractional z-index keys, per-actor
-  transactions), which is why multiplayer will be an integration guide rather than a rewrite.
-
-- **An import path from column grids.** `importFromGrid(layouts, { cols, rowHeight })` converts
-  the common cell-based dashboard format — a single layout or a whole `{ lg, md, sm, … }`
-  responsive set — inferring an anchor per item from its relationship to the grid. It is a one-way
-  converter, deliberately not a compatibility shim.
-  [Import guide →](./docs/import-from-grid.md)
-
-- **Zero runtime dependencies. MIT. TypeScript source, bundled types.**
-
----
-
-## Anchors in 20 lines
-
-An anchor answers "what does this coordinate mean when the container is a different width?".
-
-```tsx
-const layout = defineLayout({
-  container: { base: { width: 1200 }, sizes: { md: { maxWidth: 900 } } },
-  items: [
-    // pinned to the left edge, fixed width (the default)
-    { id: 'nav', x: 0, y: 0, w: 240, h: 600 },
-    // pinned to the RIGHT edge — 24px from it at every width
-    { id: 'alerts', x: 936, y: 0, w: 240, h: 300, anchor: { x: 'end' } },
-    // stretches: pinned to both edges, width derived
-    { id: 'timeline', x: 264, y: 320, w: 912, h: 280, anchor: { x: 'both' } },
-    // proportional: keeps its share of the width
-    { id: 'kpi', x: 264, y: 0, w: 648, h: 300, anchor: { x: 'scale' } },
-    // and one hand-authored override, applied only when the container is ≤ 900px
-    {
-      id: 'alerts-md', x: 0, y: 620, w: 240, h: 300,
-      at: { md: { x: { mode: 'both', start: 16, end: 16 } } },
-    },
-  ],
-});
-```
-
-Three tiers, in this order: **anchors** reflow continuously at every width; **named sizes**
-(`sizes` + per-item `at`) cascade desktop-first for the places where you want different *intent*,
-using container queries rather than viewport media queries, because dashboards get embedded in
-sidebars; and below `stackBelow` (default 480px) the layout collapses to a deterministic
-single-column stack ordered by reading order. `responsive: 'scale'` is the escape hatch for
-kiosk/TV-wall cases where uniform scaling really is what you want.
-
-Vertical anchors other than `start` need a container with a definite height —
-`container: { base: { width, height }, height: 'fill' }`. Without it they degrade to `start` with a
-dev warning, because a scrolling container has no bottom edge to anchor against.
-[Full model →](./docs/responsive.md)
-
-## Modes and control
-
-`mode` defaults to `'view'`, and view mode attaches **no listeners at all** — not no-op guarded
-ones. Geometry is byte-identical between modes, so toggling `mode="edit"` cannot shift a pixel.
-
-```tsx
-// uncontrolled: vizbrix owns the document, you observe commits
-<Vizbrix defaultLayout={doc} mode={editing ? 'edit' : 'view'} onLayoutChange={save}>…</Vizbrix>
-
-// controlled: you own the document
-<Vizbrix layout={doc} mode="edit" onLayoutChange={(next) => setDoc(next)}>…</Vizbrix>
-```
-
-In controlled mode the commit lands in the store **first** and is reported afterwards, so a slow
-parent can never stutter a drag. Whatever you pass next is honoured: pass the document you received
-(or any transform of it) to accept — undo history survives, and a structural echo does not touch
-the store — or pass a copy of the *previous* document to reject and roll the commit back. Adopting
-asynchronously (after an , inside a transition) is fine: the store keeps the committed
-document until the prop changes.
-
----
-
-## Where vizbrix fits
-
-| | **vizbrix** | column-grid engines | freeform transform layers |
-|---|---|---|---|
-| Storage model | affine expressions (`a·W + b`) per axis | integer grid cells (`x,y,w,h`) | none — you own it |
-| Free placement | native model | a flag that disables core behaviour | native |
-| Snapping | interaction layer: siblings, centres, equal gaps, container edges, optional grid | the grid itself | bring your own |
-| Responsive strategy | per-item anchors + container-query cascade + deterministic stack | one authored layout per breakpoint / column count | none |
-| SSR / first paint | static CSS, correct with zero JS; RSC entry | needs a measured width before a breakpoint can be chosen | n/a |
-| Accessibility | keyboard placement, live regions, WCAG 2.2 SC 2.5.7 tap-to-place, en + ja | typically not part of the API | typically not part of the API |
-| Undo / redo | built in, inverse ops, one gesture = one entry | app's job | app's job |
-| Persistence versioning | `{version, compat}`, migration chain, `$unknown` parking, `load()` never throws | usually an unversioned array | n/a |
-
-Column grids and transform layers are both good answers to different questions. If you want a
-12-column dashboard with compaction, use a column-grid engine. Reach for vizbrix when the grid is
-the thing that keeps getting in the way.
-
-## Size
-
-Measured per real entry point — bundled, minified, gzipped, React externalized. Nothing here is a
-prop-gated dynamic import: what you import is what you ship. CI reports these numbers on every run.
-
-| Entry | gzip | What it is |
-|---|---|---|
-| `vizbrix/react/static` | **~4 KB** | RSC-safe renderer; no client JS at all |
-| `vizbrix/schema` | **~9 KB** | types + validate/load/migrate/serialize, for servers |
-| `vizbrix/react/view` | **~18 KB** | read-only dashboard, no sensors or history |
-| `vizbrix/react` | **~33 KB** | the full editor: snapping, undo/redo, a11y, responsive |
-| `vizbrix` | **~32 KB** | the whole framework-agnostic core |
-
-The editor entry carries the snap engine, undo/redo, the accessibility layer, the responsive
-cascade and versioned persistence. For the case most people actually deploy — a saved dashboard
-rendered read-only in a customer-facing app — the cost is the view entry, or the static entry with
-no client JavaScript on the page.
-
-## TypeScript
-
-TypeScript source, bundled `.d.ts` for every entry, ESM + CJS, `sideEffects: false`. Widget data
-flows from the layout definition through the render callback without an annotation:
-
-```tsx
-type Widget = { kind: 'chart' | 'table'; title: string };
-
-const layout = defineLayout<Widget>({
-  container: { base: { width: 1200 } },
-  items: [{ id: 'a', x: 0, y: 0, w: 400, h: 240, data: { kind: 'chart', title: 'Revenue' } }],
-});
-
-<Vizbrix defaultLayout={layout} mode="edit">
-  {(item) => <Card title={item.data.title} />}   {/* item.data is Widget, not Widget | undefined */}
-</Vizbrix>
-```
-
-`data` is required exactly when you supply a `TData` that cannot be `undefined`, and optional when
-you don't — so data-less dashboards need no generics and typed ones need no null checks.
-
-## Playground
-
-An interactive playground lives in `examples/playground`:
-
-```sh
-cd examples/playground
-pnpm install
-pnpm dev
-```
+- Editing works from the keyboard alone; moves, resizes, additions and removals are announced.
+- Everything that needs a drag has a single-pointer, non-drag alternative: the numeric fields in the
+  brick menu (WCAG 2.2 SC 2.5.7).
+- Line and bar charts are readable with arrow keys and have a table view. Status colours always come
+  with a label.
+- `prefers-reduced-motion` is respected.
 
 ## Non-goals
 
-Said in writing, so you can plan around them. vizbrix v0.1 does **not** ship:
+- **Compaction or pushing.** Bricks stay where they are put, and may overlap. Snapping keeps things tidy.
+- **A generic settings editor for bricks.** Settings UIs differ per app; `onEditItem` hands that over.
+- **Data fetching.** Getting data into `data` is the app's job.
+- **Dual-axis charts, an infinite canvas, real-time collaboration.**
 
-1. **Charts or data-viz components.** Widget *contents* are yours — bring whatever charting stack
-   you already use. Shipping charts would make this a chart kit with a layout feature.
-2. **Infinite canvas / zoom + pan camera.** Dashboards live in a bounded container. The coordinate
-   space stays camera-ready; no camera is shipped.
-3. **Realtime multiplayer or a sync server.** Ops and z-keys are CRDT-shaped; multiplayer will be an
-   integration guide for the CRDT library of your choice, not a hosted feature.
-4. **Non-React adapters.** The core is framework-agnostic and stays that way, but only the React
-   adapter is shipped today.
-5. **Docking, tabs, nested split workspaces.** IDE-style tiling is a different product.
-6. **Page-builder / component-tree editing.** Also a different product.
-7. **A theming or styling system.** Headless plus minimal structural CSS. Style the `data-vzb-item`,
-   `data-selected`, `data-dragging`, `data-locked` hooks with your own CSS.
-8. **A column-grid drop-in shim.** `importFromGrid` is a one-way converter; a shim would leak
-   the cell model back into the core.
-9. **A constraint solver, editor chrome/toolbars, widget virtualization, and `push` collision.**
-   `push` is compaction under another name — the O(n²) class this library exists to avoid. The
-   schema is deliberately a strict subset of a linear-constraint system so a solver can arrive
-   later as an additive escape hatch without changing the persisted format.
+## Development
 
-## Roadmap
+```sh
+pnpm install
+pnpm check          # typecheck + lint + tests
+pnpm build && pnpm size && pnpm smoke
 
-- Vue and Svelte adapters over the same core (the core has no React dependency; this is additive).
-- A CRDT multiplayer integration guide built on the existing per-actor op log.
-- An optional linear-constraint solver behind a `constraints:` escape hatch, at the seam the schema
-  already leaves open.
-- Browser-driven CSS differential testing in CI (the unit-level differential ships today).
+cd examples/playground && pnpm install && pnpm dev
+```
 
-## Stability
-
-Two promises, from v0.1:
-
-- **Semver.** Breaking changes to the public API get a major.
-- **A versioned schema.** The persisted document carries `version` and a `compat` reader floor from
-  day one, before anyone has saved a layout. `load()` never throws, forward-unknown fields survive a
-  round trip, and every schema change ships with a migration step whose dropped fields are reported
-  with a path. Your stored dashboards are not hostages to our refactors.
-
-## Documentation
-
-| Guide | |
-|---|---|
-| [Getting started](./docs/getting-started.md) | install, first dashboard, edit/view, save & load |
-| [Responsive layout](./docs/responsive.md) | anchors, the `at` cascade, stacking, scale mode |
-| [Persistence](./docs/persistence.md) | `LoadOutcome`, `$unknown`, migrations, serialization |
-| [Accessibility](./docs/accessibility.md) | keyboard map, tap-to-place, live regions, i18n |
-| [SSR & RSC](./docs/ssr.md) | static rendering, hydration, the `position: fixed` caveat |
-| [Importing a column-grid layout](./docs/import-from-grid.md) | `importFromGrid`, anchor inference, what does not carry over |
-| [Architecture](./docs/ARCHITECTURE.md) | module map and core contracts |
+Design notes live in [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
 ## License
 

@@ -1,1067 +1,333 @@
 // @vitest-environment jsdom
-/**
- * The editor adapter's behavioural contract: controlled/uncontrolled flows,
- * StrictMode safety, mode switching, the hooks, and the generated stylesheet.
- *
- * These tests drive the store directly rather than through synthetic pointer
- * events. The pointer sensor has its own tests; what is being pinned down here
- * is the React binding around it.
- */
-
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { createRef, useState } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { StrictMode, useEffect, useState } from 'react';
-import type { ReactElement, ReactNode } from 'react';
-import { act, cleanup, render } from '@testing-library/react';
-import type { AxisPlacement, LayoutDoc, Transaction } from '../core/schema/types';
-import { defineLayout } from '../core/schema/normalize';
-import { createStore } from '../core/store/store';
-import { syncIncomingDoc } from './context';
-import { Vizbrix } from './Vizbrix';
-import { VizbrixView } from './View';
-import { useHistory, useSelection, useVizbrix, useVizbrixItem } from './hooks';
-import type { HistoryApi, SelectionApi, VizbrixApi } from './hooks';
+import { createDashboard } from '../core/doc';
+import type { DashboardDoc } from '../core/types';
+import { ja } from '../locales/ja';
+import { defineBrick, type BrickRegistry } from './brick';
+import { Dashboard, type DashboardHandle } from './Dashboard';
+import { DashboardStatic } from './Static';
 
-class InertResizeObserver {
-  observe(): void {}
-  unobserve(): void {}
-  disconnect(): void {}
-}
-const globalWithRO = globalThis as unknown as { ResizeObserver?: unknown };
-globalWithRO.ResizeObserver ??= InertResizeObserver;
+afterEach(cleanup);
 
-function makeDoc(): LayoutDoc {
-  return defineLayout({
-    container: { base: { width: 1000 }, stackBelow: 0 },
+const renders: Record<string, number> = {};
+const bricks: BrickRegistry = {
+  note: defineBrick<{ text?: string }>({
+    label: 'Note',
+    defaults: { w: 300, h: 100, title: 'New note', props: { text: 'hello' } },
+    render: ({ item, props, data }) => {
+      renders[item.id] = (renders[item.id] ?? 0) + 1;
+      return <p>{props.text ?? String(data.greeting ?? '')}</p>;
+    },
+  }),
+  boom: defineBrick({
+    render: () => {
+      throw new Error('kaboom');
+    },
+  }),
+};
+
+const makeDoc = (): DashboardDoc =>
+  createDashboard({
+    gap: 0,
     items: [
-      { id: 'a', x: 0, y: 0, w: 100, h: 50 },
-      { id: 'b', x: 200, y: 0, w: 100, h: 50 },
+      { id: 'a', type: 'note', title: 'Alpha', x: 0, y: 0, w: 600, h: 200, props: { text: 'first' } },
+      { id: 'b', type: 'note', title: 'Beta', x: 600, y: 0, w: 600, h: 200 },
     ],
   });
+
+const item = (id: string): HTMLElement => document.querySelector<HTMLElement>(`[data-vbx-item="${id}"]`)!;
+
+/** jsdom has no layout: give the canvas a 1200px box so pixel math is 1:1 with design units. */
+function fakeLayout(): void {
+  const canvas = document.querySelector<HTMLElement>('.vbx-canvas')!;
+  canvas.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 1200, bottom: 800, width: 1200, height: 800, toJSON: () => ({}) });
+  canvas.setPointerCapture = () => {};
+  canvas.releasePointerCapture = () => {};
 }
 
-const at = (offset: number, size: number): AxisPlacement => ({ mode: 'start', offset, size });
-
-/** Hand-authored `z` keys the fractional generator cannot use as bounds. */
-function handAuthored(): LayoutDoc {
-  return {
-    version: 1,
-    container: { base: { width: 1000 }, stackBelow: 0 },
-    items: [
-      { id: 'a', z: 'b0', x: at(10, 100), y: at(10, 50) },
-      { id: 'b', z: 'c0', x: at(300, 100), y: at(10, 50) },
-    ],
-  };
+function pointer(target: EventTarget, type: string, x: number, y: number, init: MouseEventInit = {}): void {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, ...init });
+  Object.defineProperty(event, 'pointerId', { value: 1 });
+  act(() => {
+    target.dispatchEvent(event);
+  });
 }
 
-interface Probed {
-  api: VizbrixApi<unknown>;
-  history: HistoryApi;
-  selection: SelectionApi;
+async function frame(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  });
 }
 
-let probed: Probed | null = null;
-
-function Probe(): null {
-  probed = {
-    api: useVizbrix(),
-    history: useHistory(),
-    selection: useSelection(),
-  };
-  return null;
-}
-
-/** Renders the probe once, under the first item. */
-function children(item: { id: string }): ReactNode {
-  return item.id === 'a' ? <Probe /> : null;
-}
-
-function itemEl(id: string): HTMLElement {
-  const el = document.querySelector(`[data-vzb-item="${id}"]`);
-  if (!el) throw new Error(`no item element for ${id}`);
-  return el as HTMLElement;
-}
-
-function styleText(): string {
-  const el = document.querySelector('style[data-vzb-style]');
-  if (!el) throw new Error('no generated stylesheet');
-  return el.innerHTML;
-}
-
-afterEach(() => {
-  cleanup();
-  probed = null;
-});
-
-/* ------------------------------------------------------------------ */
-
-describe('apiRef and useVizbrixItem', () => {
-  it('exposes the useVizbrix surface to chrome outside the subtree', () => {
-    const ref: { current: VizbrixApi<undefined> | null } = { current: null };
-    const { unmount } = render(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit" apiRef={ref}>
-        {children}
-      </Vizbrix>,
-    );
-    expect(ref.current).not.toBeNull();
-    expect(ref.current!.isEditing).toBe(true);
-    act(() => {
-      ref.current!.store.moveItem('a', { x: 40, y: 10, w: 100, h: 50 });
-    });
-    expect(ref.current!.store.getItemView('a')!.rect.x).toBe(40);
-    unmount();
-    expect(ref.current).toBeNull();
+describe('<Dashboard> read-only', () => {
+  it('renders bricks with titles, data and a compiled stylesheet', () => {
+    const { container } = render(<Dashboard defaultValue={makeDoc()} bricks={bricks} data={{ greeting: 'from data' }} />);
+    expect(screen.getByRole('heading', { name: 'Alpha' })).toBeTruthy();
+    expect(screen.getByText('first')).toBeTruthy();
+    expect(screen.getByText('from data')).toBeTruthy();
+    const css = container.querySelector('style')!.textContent!;
+    expect(css).toContain('[data-vbx-item="a"]{left:0px;top:0px;width:50%;height:200px}');
+    expect(css).toContain('@container vbx (max-width:600px)');
   });
 
-  it('useVizbrixItem tracks one item and ignores its siblings', () => {
-    let renders = 0;
-    let last: ReturnType<typeof useVizbrixItem> | null = null;
-    function Inspector(): null {
-      renders += 1;
-      last = useVizbrixItem('b');
-      return null;
-    }
-    render(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit">
-        {(item) => (item.id === 'a' ? (
-          <>
-            <Probe />
-            <Inspector />
-          </>
-        ) : null)}
-      </Vizbrix>,
-    );
-    const store = probed!.api.store;
-    expect(renders).toBeGreaterThan(0);
-    expect(last!.rect!.x).toBe(200);
-
-    // Tracks its item's commits without re-rendering the item shells around it.
-    const before = renders;
-    act(() => {
-      store.moveItem('b', { x: 260, y: 10, w: 100, h: 50 });
-    });
-    expect(renders).toBeGreaterThan(before);
-    expect(last!.rect!.x).toBe(260);
-    expect(last!.isSelected).toBe(false);
-
-    act(() => {
-      store.removeItem('b');
-    });
-    expect(last!.item).toBeUndefined();
-  });
-});
-
-describe('uncontrolled mode', () => {
-  it('reports every committed transaction with the new doc and the tx', () => {
-    const onLayoutChange = vi.fn<(doc: LayoutDoc, tx: Transaction) => void>();
-    render(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit" onLayoutChange={onLayoutChange}>
-        {children}
-      </Vizbrix>,
-    );
-
-    const store = probed!.api.store;
-    act(() => {
-      store.moveItem('a', { x: 40, y: 10, w: 100, h: 50 });
-    });
-
-    expect(onLayoutChange).toHaveBeenCalledTimes(1);
-    const [doc, tx] = onLayoutChange.mock.calls[0];
-    expect(doc).toBe(store.getDoc());
-    expect(tx.label.kind).toBe('move');
-    expect(tx.label.ids).toEqual(['a']);
-    expect(tx.ops).toHaveLength(1);
-    // §1.15: the transaction is an argument, never stamped onto the document.
-    expect(Object.keys(doc)).not.toContain('__txId');
-
-    // A no-op commit is not a transaction at all.
-    act(() => {
-      store.moveItem('a', { x: 40, y: 10, w: 100, h: 50 });
-    });
-    expect(onLayoutChange).toHaveBeenCalledTimes(1);
+  it('exposes nothing editable: no toolbar, no tab stops, no grips', () => {
+    const { container } = render(<Dashboard defaultValue={makeDoc()} bricks={bricks} />);
+    expect(container.querySelector('.vbx-toolbar')).toBeNull();
+    expect(container.querySelector('.vbx-grip')).toBeNull();
+    expect(item('a').hasAttribute('tabindex')).toBe(false);
   });
 
-  it('ignores later changes to defaultLayout', () => {
-    const first = makeDoc();
-    const { rerender } = render(
-      <Vizbrix defaultLayout={first} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-    const store = probed!.api.store;
-    rerender(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-    expect(store.getDoc()).toBe(first);
-  });
-});
-
-describe('controlled mode', () => {
-  it('commits internally first and does not loop when the parent echoes', () => {
-    let renders = 0;
-    let changes = 0;
-
-    function Host(): ReactElement {
-      const [doc, setDoc] = useState(makeDoc);
-      renders += 1;
-      return (
-        <Vizbrix
-          layout={doc}
-          mode="edit"
-          onLayoutChange={(next) => {
-            changes += 1;
-            setDoc(next);
-          }}
-        >
-          {children}
-        </Vizbrix>
-      );
-    }
-
-    render(<Host />);
-    const store = probed!.api.store;
-    const before = store.getDoc();
-
-    act(() => {
-      store.moveItem('a', { x: 40, y: 10, w: 100, h: 50 });
-    });
-
-    expect(changes).toBe(1);
-    // The store moved first; the parent's echo did not replace the doc again.
-    expect(store.getDoc()).not.toBe(before);
-    expect(store.getItemView('a')!.rect.x).toBe(40);
-
-    const settled = renders;
-    act(() => {
-      /* let every scheduled effect drain */
-    });
-    expect(renders).toBe(settled);
-    expect(changes).toBe(1);
-  });
-
-  it('keeps a commit the parent has not adopted yet (async adoption is legal)', () => {
-    // A parent that persists first and adopts on promise resolution — or wraps
-    // adoption in a transition — must not have the drag snapped back out from
-    // under the user. The store keeps the committed document until the prop
-    // actually changes.
-    const frozen = makeDoc();
-    render(
-      <Vizbrix layout={frozen} mode="edit" onLayoutChange={() => {}}>
-        {children}
-      </Vizbrix>,
-    );
-    const store = probed!.api.store;
-
-    act(() => {
-      store.moveItem('a', { x: 400, y: 10, w: 100, h: 50 });
-    });
-
-    expect(store.getItemView('a')!.rect.x).toBe(400);
-    expect(store.canUndo()).toBe(true);
-  });
-
-  it('rolls back when the parent re-asserts a copy of the previous document', () => {
-    const frozen = makeDoc();
-    function Host({ doc }: { doc: LayoutDoc }): ReactElement {
-      return (
-        <Vizbrix layout={doc} mode="edit" onLayoutChange={() => {}}>
-          {children}
-        </Vizbrix>
-      );
-    }
-    const { rerender } = render(<Host doc={frozen} />);
-    const store = probed!.api.store;
-
-    act(() => {
-      store.moveItem('a', { x: 200, y: 10, w: 100, h: 50 });
-    });
-    act(() => {
-      store.moveItem('a', { x: 400, y: 10, w: 100, h: 50 });
-    });
-    expect(store.getItemView('a')!.rect.x).toBe(400);
-
-    // Rejecting = asserting the old document under a new identity.
-    rerender(<Host doc={{ ...frozen, items: frozen.items.map((i) => ({ ...i })) }} />);
-
-    expect(store.getItemView('a')!.rect.x).toBe(0);
-  });
-
-  it('preserves undo history across a parent rejection', () => {
-    const frozen = makeDoc();
-    function Host({ doc }: { doc: LayoutDoc }): ReactElement {
-      return (
-        <Vizbrix layout={doc} mode="edit" onLayoutChange={() => {}}>
-          {children}
-        </Vizbrix>
-      );
-    }
-    const { rerender } = render(<Host doc={frozen} />);
-    const store = probed!.api.store;
-
-    act(() => {
-      store.moveItem('a', { x: 200, y: 10, w: 100, h: 50 });
-    });
-    expect(store.canUndo()).toBe(true);
-
-    rerender(<Host doc={{ ...frozen, items: frozen.items.map((i) => ({ ...i })) }} />);
-
-    // The rollback must not destroy the user's whole undo stack: a validating
-    // parent would otherwise wipe history every time its rule fires.
-    expect(store.canUndo()).toBe(true);
-  });
-
-  it('treats a deep clone with deeply nested data as an echo', () => {
-    // Chart-spec-sized payloads nest well past a dozen levels; a structural
-    // clone of them must still read as "the same document", or a cloning
-    // parent replaces the doc (and re-renders every item) on every commit.
-    let deep: Record<string, unknown> = { leaf: true };
-    for (let i = 0; i < 20; i++) deep = { nested: deep };
-    const doc = defineLayout<Record<string, unknown>>({
-      container: { base: { width: 1000 }, stackBelow: 0 },
-      items: [{ id: 'a', x: 0, y: 0, w: 100, h: 50, data: deep }],
-    });
-
-    function Host(): ReactElement {
-      const [current, setCurrent] = useState(doc);
-      return (
-        <Vizbrix
-          layout={current}
-          mode="edit"
-          onLayoutChange={(next) => setCurrent(JSON.parse(JSON.stringify(next)))}
-        >
-          {children}
-        </Vizbrix>
-      );
-    }
-
-    render(<Host />);
-    const store = probed!.api.store;
-
-    act(() => {
-      store.moveItem('a', { x: 40, y: 0, w: 100, h: 50 });
-    });
-
-    expect(store.getItemView('a')!.rect.x).toBe(40);
-    expect(store.canUndo()).toBe(true);
-  });
-
-  it('refuses to ingest an unusable controlled prop after mount', () => {
-    const good = makeDoc();
-    function Host({ doc }: { doc: LayoutDoc }): ReactElement {
-      return (
-        <Vizbrix layout={doc} mode="edit">
-          {children}
-        </Vizbrix>
-      );
-    }
-    const { rerender } = render(<Host doc={good} />);
-    const store = probed!.api.store;
-    expect(store.getOrder()).toEqual(['a', 'b']);
-
-    // A future-schema document the construction gate would refuse must be
-    // refused by the reconciliation effect too.
-    const future = { ...good, compat: 99 } as LayoutDoc;
-    rerender(<Host doc={future} />);
-
-    expect(store.getDoc().compat).not.toBe(99);
-    expect(store.getOrder()).toEqual(['a', 'b']);
-  });
-
-  it('adopts a document the parent transformed', () => {
-    const first = makeDoc();
-    const second = defineLayout({
-      container: { base: { width: 1000 }, stackBelow: 0 },
-      items: [{ id: 'a', x: 0, y: 0, w: 100, h: 50 }],
-    });
-
-    const { rerender } = render(
-      <Vizbrix layout={first} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-    const store = probed!.api.store;
-    expect(store.getOrder()).toEqual(['a', 'b']);
-
-    rerender(
-      <Vizbrix layout={second} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-
-    expect(store.getDoc()).toBe(second);
-    expect(store.getOrder()).toEqual(['a']);
-    expect(document.querySelectorAll('[data-vzb-item]')).toHaveLength(1);
-  });
-
-  // A parent that maps the emitted doc into a fresh object hands back a NEW
-  // identity after every commit. Treating that as an assertion issues a
-  // replaceDoc, and replaceDoc is the load boundary: it clears history. Undo
-  // would be dead for every consumer that stores anything but the raw object.
-  it('keeps undo/redo alive when the parent stores a transformed copy', () => {
-    const seen: LayoutDoc[] = [];
-
-    function Host(): ReactElement {
-      const [doc, setDoc] = useState(makeDoc);
-      return (
-        <Vizbrix
-          layout={doc}
-          mode="edit"
-          onLayoutChange={(next) => {
-            seen.push(next);
-            // Structurally identical, every object along the way brand new.
-            setDoc({ ...next, items: next.items.map((entry) => ({ ...entry })) });
-          }}
-        >
-          {children}
-        </Vizbrix>
-      );
-    }
-
-    render(<Host />);
-    const store = probed!.api.store;
-
-    act(() => {
-      store.moveItem('a', { x: 40, y: 10, w: 100, h: 50 });
-    });
-    expect(seen).toHaveLength(1);
-    expect(store.getItemView('a')!.rect.x).toBe(40);
-    expect(store.canUndo()).toBe(true);
-
-    act(() => {
-      store.undo();
-    });
-    expect(store.getItemView('a')!.rect.x).toBe(0);
-    // And the undo itself is a commit, which the transforming parent echoes.
-    expect(store.canRedo()).toBe(true);
-  });
-
-  // The store REPAIRS a document as it installs it (non-canonical `z` keys), so
-  // a hand-authored prop is never `=== getDoc()` afterwards and would look like
-  // a fresh assertion forever — each replay clearing history and re-installing
-  // the keys `keyBetween()` rejects.
-  // The store REPAIRS a document as it adopts it (non-canonical `z` keys), so
-  // `getDoc() !== theProp` from the very first render. Replaying the prop over
-  // that repair on mount clears history and re-keys the whole document, and
-  // before the store repaired at the `replaceDoc` door it also reinstalled the
-  // exact keys `keyBetween()` rejects.
-  it('does not replay a hand-authored prop over the repair on mount', () => {
-    const source = handAuthored();
-    let atFirstRender: LayoutDoc<unknown> | null = null;
-    let live: VizbrixApi<unknown>['store'] | null = null;
-
-    function Capture(): null {
-      const { store } = useVizbrix<unknown>();
-      live = store;
-      // Renders run before effects: this is the document as CONSTRUCTED.
-      atFirstRender ??= store.getDoc() as LayoutDoc<unknown>;
-      return null;
-    }
-
-    render(
-      <Vizbrix layout={source} mode="edit" onLayoutChange={() => {}}>
-        {(item) => (item.id === 'a' ? <Capture /> : null)}
-      </Vizbrix>,
-    );
-
-    const store = live as VizbrixApi<unknown>['store'] | null;
-    expect(atFirstRender).not.toBeNull();
-    expect(atFirstRender).not.toBe(source);
-    expect(atFirstRender!.items.map((entry) => entry.z)).not.toEqual(['b0', 'c0']);
-    // No mount-time replaceDoc: the store still holds exactly what it built.
-    expect(store!.getDoc()).toBe(atFirstRender);
-    expect(() => store!.bringToFront('a')).not.toThrow();
-  });
-
-  it('treats a repaired document as an echo at the syncIncomingDoc boundary', () => {
-    const source = handAuthored() as LayoutDoc<unknown>;
-    const store = createStore(source, { mode: 'edit' });
-    const adopted = store.getDoc();
-    expect(adopted).not.toBe(source);
-    // How every surface calls it on mount: the seed is what the store adopted.
-    expect(syncIncomingDoc(store, source, source)).toBe(false);
-    expect(store.getDoc()).toBe(adopted);
-  });
-
-  it('still applies a genuinely different document', () => {
-    const store = createStore(makeDoc() as LayoutDoc<unknown>, { mode: 'edit' });
-    const next = defineLayout({
-      container: { base: { width: 1000 }, stackBelow: 0 },
-      items: [{ id: 'a', x: 0, y: 0, w: 100, h: 50 }],
-    }) as LayoutDoc<unknown>;
-    expect(syncIncomingDoc(store, next, null)).toBe(true);
-    expect(store.getOrder()).toEqual(['a']);
-  });
-
-  // React runs CHILD effects before parent effects, so a descendant seeding the
-  // dashboard from its own mount effect commits before the tx sink exists.
-  it('reports a transaction committed from a child effect', () => {
-    const onLayoutChange = vi.fn<(doc: LayoutDoc, tx: Transaction) => void>();
-
-    function Seeder(): null {
-      const { store } = useVizbrix();
-      useEffect(() => {
-        store.moveItem('a', { x: 42, y: 10, w: 100, h: 50 });
-      }, [store]);
-      return null;
-    }
-
-    render(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit" onLayoutChange={onLayoutChange}>
-        {(item) => (item.id === 'a' ? <Seeder /> : null)}
-      </Vizbrix>,
-    );
-
-    expect(onLayoutChange).toHaveBeenCalledTimes(1);
-    const [doc, tx] = onLayoutChange.mock.calls[0];
-    expect(tx.label.kind).toBe('move');
-    expect(doc.items.find((entry) => entry.id === 'a')).toBeTruthy();
-  });
-});
-
-describe('StrictMode', () => {
-  it('mounts once, leaks no second store, and logs nothing', () => {
-    const errors: unknown[][] = [];
-    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-      errors.push(args);
-    });
-    const onLayoutChange = vi.fn();
-
-    render(
-      <StrictMode>
-        <Vizbrix defaultLayout={makeDoc()} mode="edit" onLayoutChange={onLayoutChange}>
-          {children}
-        </Vizbrix>
-      </StrictMode>,
-    );
-
-    expect(document.querySelectorAll('[data-vzb-item="a"]')).toHaveLength(1);
-    expect(document.querySelectorAll('[data-vzb-guides]')).toHaveLength(1);
-
-    act(() => {
-      probed!.api.store.moveItem('a', { x: 40, y: 10, w: 100, h: 50 });
-    });
-    // Two live stores (or two live tx sinks) would report the commit twice.
-    expect(onLayoutChange).toHaveBeenCalledTimes(1);
-    expect(errors).toEqual([]);
-    spy.mockRestore();
-  });
-});
-
-describe('mode', () => {
-  it('defaults to view: no editing ARIA, no overlay', () => {
-    render(<Vizbrix defaultLayout={makeDoc()}>{children}</Vizbrix>);
-    const el = itemEl('a');
-    expect(el.getAttribute('role')).toBeNull();
-    expect(el.getAttribute('tabindex')).toBeNull();
-    expect(el.getAttribute('aria-roledescription')).toBeNull();
-    expect(document.querySelector('[data-vzb-guides]')).toBeNull();
-  });
-
-  it('attaches editing ARIA when switched to edit', () => {
-    const doc = makeDoc();
-    const { rerender } = render(<Vizbrix defaultLayout={doc}>{children}</Vizbrix>);
-    expect(itemEl('a').getAttribute('role')).toBeNull();
-
-    rerender(
-      <Vizbrix defaultLayout={doc} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-
-    const el = itemEl('a');
-    expect(el.getAttribute('role')).toBe('button');
-    expect(el.getAttribute('tabindex')).toBe('0');
-    expect(el.getAttribute('aria-roledescription')).toBeTruthy();
-    const describedBy = el.getAttribute('aria-describedby');
-    expect(describedBy).toBeTruthy();
-    expect(document.getElementById(describedBy!)?.textContent).toBeTruthy();
-    expect(probed!.api.store.getMode()).toBe('edit');
-  });
-});
-
-describe('hooks', () => {
-  it('useHistory undoes and redoes through the store', () => {
-    render(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-    const store = probed!.api.store;
-    expect(probed!.history.canUndo).toBe(false);
-
-    act(() => {
-      store.moveItem('a', { x: 400, y: 10, w: 100, h: 50 });
-    });
-    expect(probed!.history.canUndo).toBe(true);
-    expect(probed!.history.undoLabel).toBeTruthy();
-
-    act(() => {
-      probed!.history.undo();
-    });
-    expect(store.getItemView('a')!.rect.x).toBe(0);
-    expect(probed!.history.canRedo).toBe(true);
-
-    act(() => {
-      probed!.history.redo();
-    });
-    expect(store.getItemView('a')!.rect.x).toBe(400);
-  });
-
-  it('undoes exactly once per Cmd/Ctrl+Z keystroke', () => {
-    render(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-    const store = probed!.api.store;
-    act(() => {
-      store.moveItem('a', { x: 400, y: 10, w: 100, h: 50 });
-    });
-    act(() => {
-      store.moveItem('a', { x: 500, y: 10, w: 100, h: 50 });
-    });
-
-    act(() => {
-      itemEl('a').dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }),
-      );
-    });
-
-    // The core keyboard sensor owns this shortcut. A duplicate React handler on
-    // the same element would land on x = 0 instead, because the sensor calls
-    // preventDefault() but not stopPropagation().
-    expect(store.getItemView('a')!.rect.x).toBe(400);
-  });
-
-  it('useHistory reports frozen history in view mode', () => {
-    render(<Vizbrix defaultLayout={makeDoc()}>{children}</Vizbrix>);
-    act(() => {
-      probed!.api.store.moveItem('a', { x: 400, y: 10, w: 100, h: 50 });
-    });
-    expect(probed!.history.canUndo).toBe(false);
-  });
-
-  it('useSelection reflects and drives the selection channel', () => {
-    render(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-    expect(probed!.selection.ids).toEqual([]);
-
-    act(() => {
-      probed!.selection.set(['b']);
-    });
-    expect(probed!.selection.ids).toEqual(['b']);
-    expect(itemEl('b').getAttribute('data-selected')).toBe('');
-    // Selected items in edit mode expose resize handles.
-    expect(itemEl('b').querySelectorAll('[data-vzb-handle]')).toHaveLength(8);
-
-    act(() => {
-      probed!.selection.clear();
-    });
-    expect(probed!.selection.ids).toEqual([]);
-    expect(itemEl('b').getAttribute('data-selected')).toBeNull();
-  });
-
-  it('useVizbrix throws outside a provider', () => {
+  it('isolates a crashing brick and shows unknown types as placeholders', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    function Orphan(): null {
-      useVizbrix();
-      return null;
-    }
-    expect(() => render(<Orphan />)).toThrow(/no layout context/);
-    spy.mockRestore();
-  });
-});
-
-describe('generated stylesheet', () => {
-  it('carries the placement and is re-emitted after a commit', () => {
-    render(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit" instanceId="fixture">
-        {children}
-      </Vizbrix>,
-    );
-
-    const before = styleText();
-    expect(before).toContain('[data-vzb="fixture"]');
-    expect(before).toContain('[data-vzb-item="a"]');
-    expect(before).toContain('position:absolute');
-    // Placement never appears inline (§1.3) — an inline style would beat the
-    // @container override blocks.
-    expect(itemEl('a').getAttribute('style') ?? '').not.toContain('left');
-
-    act(() => {
-      probed!.api.store.moveItem('a', { x: 40, y: 10, w: 100, h: 50 });
-    });
-
-    const after = styleText();
-    expect(after).not.toBe(before);
-    expect(after).toContain('40px');
-  });
-});
-
-describe('generated stylesheet scope', () => {
-  it('re-emits the sheet when instanceId changes', () => {
-    const doc = makeDoc();
-    const { rerender } = render(
-      <Vizbrix defaultLayout={doc} instanceId="one" mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-    expect(styleText()).toContain('[data-vzb="one"]');
-
-    rerender(
-      <Vizbrix defaultLayout={doc} instanceId="two" mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-    // The document did not change, but every selector in the sheet did: a sheet
-    // still scoped to `one` matches nothing, so every item loses its position.
-    expect(document.querySelector('[data-vzb]')!.getAttribute('data-vzb')).toBe('two');
-    expect(styleText()).toContain('[data-vzb="two"]');
-    expect(styleText()).not.toContain('[data-vzb="one"]');
-  });
-});
-
-describe('renderIncompatible', () => {
-  const originalWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
-
-  afterEach(() => {
-    if (originalWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', originalWidth);
-    else delete (HTMLElement.prototype as unknown as { clientWidth?: number }).clientWidth;
-  });
-
-  it('leaves the dashboard measured and interactive once the document recovers', () => {
-    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
-      configurable: true,
-      get: () => 640,
-    });
-
-    const future = { ...makeDoc(), compat: 99 } as LayoutDoc;
-    const good = makeDoc();
-    const fallback = (): ReactNode => <p data-testid="nope">cannot show this</p>;
-
-    const { rerender } = render(
-      <Vizbrix layout={future} mode="edit" renderIncompatible={fallback} onLayoutChange={() => {}}>
-        {children}
-      </Vizbrix>,
-    );
-    expect(document.querySelectorAll('[data-vzb-item]')).toHaveLength(0);
-
-    rerender(
-      <Vizbrix layout={good} mode="edit" renderIncompatible={fallback} onLayoutChange={() => {}}>
-        {children}
-      </Vizbrix>,
-    );
-
-    expect(document.querySelectorAll('[data-vzb-item]')).toHaveLength(2);
-    // The canvas mounted a commit AFTER the effects that measure it and attach
-    // the controller first ran; both must have re-run against the real node.
-    expect(probed!.api.store.getContainerWidth()).toBe(640);
-    act(() => {
-      probed!.api.beginPlace('a');
-    });
-    expect(probed!.api.store.getInteraction()).toMatchObject({ phase: 'placing', id: 'a' });
-  });
-});
-
-describe('hydration', () => {
-  it('hydrates server markup with no mismatch', async () => {
-    const { renderToString } = await import('react-dom/server');
-    const { hydrateRoot } = await import('react-dom/client');
-
-    const tree = (
-      <VizbrixView layout={makeDoc()} instanceId="hyd">
-        {(item) => <span>{item.id}</span>}
-      </VizbrixView>
-    );
-
-    const host = document.createElement('div');
-    host.innerHTML = renderToString(tree);
-    document.body.appendChild(host);
-    expect(host.querySelectorAll('[data-vzb-item]')).toHaveLength(2);
-
-    const errors: unknown[][] = [];
-    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-      errors.push(args);
-    });
-    // A mismatch would be React's loudest warning; the server snapshot exists
-    // precisely so the first client render agrees with the server (§1.21).
-    let root: { unmount(): void } | null = null;
-    act(() => {
-      root = hydrateRoot(host, tree);
-    });
-    expect(errors).toEqual([]);
-    act(() => {
-      root!.unmount();
-    });
-    host.remove();
-    spy.mockRestore();
-  });
-});
-
-describe('the render callback', () => {
-  // §1.25: a new `children` identity must NOT re-render every item — an inline
-  // arrow is a new function on every parent render, and in controlled mode the
-  // parent re-renders after every commit. The callback is ref-backed and the
-  // box is updated silently; the documented cost is a stale-render window, and
-  // `renderKey` is the documented escape hatch.
-  it('does not re-render items when only the callback identity changed', () => {
-    const doc = makeDoc();
-    const { rerender } = render(
-      <Vizbrix defaultLayout={doc} mode="edit">
-        {(item) => <span>first:{item.id}</span>}
-      </Vizbrix>,
-    );
-    expect(itemEl('a').textContent).toBe('first:a');
-
-    rerender(
-      <Vizbrix defaultLayout={doc} mode="edit">
-        {(item) => <span>second:{item.id}</span>}
-      </Vizbrix>,
-    );
-    // Nothing about item `a` changed, so item `a` did not render.
-    expect(itemEl('a').textContent).toBe('first:a');
-  });
-
-  it('uses the CURRENT callback the next time an item renders for its own reason', () => {
-    const doc = makeDoc();
-    const { rerender } = render(
-      <Vizbrix defaultLayout={doc} mode="edit">
-        {(item) => (
-          <span>
-            first:{item.id}:{Math.round(item.rect.x)}
-            {item.id === 'a' ? <Probe /> : null}
-          </span>
-        )}
-      </Vizbrix>,
-    );
-    const store = probed!.api.store;
-
-    rerender(
-      <Vizbrix defaultLayout={doc} mode="edit">
-        {(item) => (
-          <span>
-            second:{item.id}:{Math.round(item.rect.x)}
-            {item.id === 'a' ? <Probe /> : null}
-          </span>
-        )}
-      </Vizbrix>,
-    );
-
-    act(() => {
-      store.moveItem('a', { x: 40, y: 0, w: 100, h: 50 });
-    });
-    // No stale-forever class: the commit that re-rendered `a` used the callback
-    // the parent last passed, not the one it was mounted with.
-    expect(itemEl('a').textContent).toBe('second:a:40');
-    expect(itemEl('b').textContent).toBe('first:b:200');
-  });
-
-  it('adopts a new callback everywhere when renderKey changes', () => {
-    const doc = makeDoc();
-    const { rerender } = render(
-      <Vizbrix defaultLayout={doc} mode="edit" renderKey="v1">
-        {(item) => <span>first:{item.id}</span>}
-      </Vizbrix>,
-    );
-    expect(itemEl('a').textContent).toBe('first:a');
-
-    rerender(
-      <Vizbrix defaultLayout={doc} mode="edit" renderKey="v2">
-        {(item) => <span>second:{item.id}</span>}
-      </Vizbrix>,
-    );
-    expect(itemEl('a').textContent).toBe('second:a');
-    expect(itemEl('b').textContent).toBe('second:b');
-  });
-
-  it('exposes a drag-handle marker and a tap-to-place button', () => {
-    render(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit">
-        {(item, ui) => (
-          <>
-            {item.id === 'a' ? <Probe /> : null}
-            <span {...ui.handleProps}>grip</span>
-            <button {...ui.moveButtonProps}>move {item.id}</button>
-          </>
-        )}
-      </Vizbrix>,
-    );
-
-    const el = itemEl('a');
-    expect(el.querySelector('[data-vzb-drag-handle]')).not.toBeNull();
-    const button = el.querySelector('button')!;
-    expect(button.getAttribute('aria-label')).toBeTruthy();
-    expect(button.getAttribute('aria-pressed')).toBe('false');
-
-    // WCAG 2.2 SC 2.5.7: a single-pointer, non-drag alternative to dragging.
-    act(() => {
-      button.click();
-    });
-    expect(probed!.api.store.getInteraction()).toMatchObject({ phase: 'placing', id: 'a' });
-
-    // And clicking it again backs out of the placing session.
-    act(() => {
-      (itemEl('a').querySelector('button') as HTMLButtonElement).click();
-    });
-    expect(probed!.api.store.getInteraction().phase).toBe('idle');
-  });
-});
-
-describe('container measurement', () => {
-  const originalWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
-
-  function pinClientWidth(width: number): void {
-    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
-      configurable: true,
-      get: () => width,
-    });
-  }
-
-  afterEach(() => {
-    if (originalWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', originalWidth);
-    else delete (HTMLElement.prototype as unknown as { clientWidth?: number }).clientWidth;
-  });
-
-  it('feeds the measured width to the store and activates named sizes', () => {
-    pinClientWidth(600);
-    const doc = defineLayout({
-      container: { base: { width: 1000 }, sizes: { md: { maxWidth: 700 } }, stackBelow: 0 },
+    const doc = createDashboard({
       items: [
-        {
-          id: 'a',
-          x: 0,
-          y: 0,
-          w: 100,
-          h: 50,
-          at: { md: { x: { mode: 'start', offset: 20, size: 80 } } },
-        },
+        { id: 'x', type: 'boom', x: 0, y: 0, w: 300, h: 100 },
+        { id: 'y', type: 'mystery', x: 300, y: 0, w: 300, h: 100 },
+        { id: 'z', type: 'note', x: 600, y: 0, w: 300, h: 100, props: { text: 'still here' } },
       ],
     });
-
-    render(
-      <Vizbrix defaultLayout={doc} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-
-    const store = probed!.api.store;
-    expect(store.getContainerWidth()).toBe(600);
-    expect(store.getActiveSizes()).toEqual(['md']);
-    expect(store.getItemView('a')!.rect).toMatchObject({ x: 20, w: 80 });
+    render(<Dashboard defaultValue={doc} bricks={bricks} />);
+    expect(screen.getByRole('alert').textContent).toContain('failed to render');
+    expect(screen.getByText('Unknown brick type “mystery”')).toBeTruthy();
+    expect(screen.getByText('still here')).toBeTruthy();
+    spy.mockRestore();
   });
 
-  it('honours the size prop over the real measurement', () => {
-    pinClientWidth(1000);
-    const doc = defineLayout({
-      container: { base: { width: 1000 }, sizes: { md: { maxWidth: 700 } }, stackBelow: 0 },
-      items: [{ id: 'a', x: 0, y: 0, w: 100, h: 50 }],
-    });
-
-    render(
-      <Vizbrix defaultLayout={doc} mode="edit" size="md">
-        {children}
-      </Vizbrix>,
-    );
-
-    expect(probed!.api.store.getContainerWidth()).toBe(700);
-    expect(probed!.api.store.getActiveSizes()).toEqual(['md']);
+  it('falls back to renderItem for unregistered types', () => {
+    const doc = createDashboard({ items: [{ id: 'y', type: 'mystery', x: 0, y: 0, w: 300, h: 100 }] });
+    render(<Dashboard defaultValue={doc} renderItem={(i) => <b>custom {i.type}</b>} />);
+    expect(screen.getByText('custom mystery')).toBeTruthy();
   });
 
-  it('ignores a zero measurement instead of collapsing the dashboard', () => {
-    pinClientWidth(0);
-    render(
-      <Vizbrix defaultLayout={makeDoc()} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-    // The base width survives: a hidden container must not restack everything.
-    expect(probed!.api.store.getContainerWidth()).toBe(1000);
-    expect(probed!.api.store.isStacked()).toBe(false);
-  });
-
-  it('measures the fractional content box, not the rounded clientWidth', () => {
-    // `clientWidth` is an integer; `@container (max-width:767px)` is evaluated
-    // against the fractional content box. At 767.5px CSS keeps the wide rules,
-    // so the resolved rects must not switch to the narrow ones.
-    pinClientWidth(767);
-    const originalRect = HTMLElement.prototype.getBoundingClientRect;
-    HTMLElement.prototype.getBoundingClientRect = function rect(): DOMRect {
-      return { width: 767.5, height: 400 } as DOMRect;
-    };
-
-    try {
-      const doc = defineLayout({
-        container: { base: { width: 1000 }, sizes: { md: { maxWidth: 767 } }, stackBelow: 0 },
-        items: [{ id: 'a', x: 0, y: 0, w: 100, h: 50 }],
-      });
-      render(
-        <Vizbrix defaultLayout={doc} mode="edit">
-          {children}
-        </Vizbrix>,
-      );
-
-      expect(probed!.api.store.getContainerWidth()).toBe(767.5);
-      expect(probed!.api.store.getActiveSizes()).toEqual([]);
-    } finally {
-      HTMLElement.prototype.getBoundingClientRect = originalRect;
-    }
-  });
-
-  it("scales the canvas wrapper under responsive:'scale'", () => {
-    pinClientWidth(600);
-    const doc = defineLayout({
-      container: { base: { width: 1200, height: 800 }, responsive: 'scale' },
-      items: [{ id: 'a', x: 0, y: 0, w: 100, h: 50 }],
-    });
-
-    const { container } = render(
-      <Vizbrix defaultLayout={doc} mode="edit">
-        {children}
-      </Vizbrix>,
-    );
-
-    const canvas = container.querySelector('[data-vzb]') as HTMLElement;
-    expect(canvas.style.transform).toBe('scale(0.5)');
-    expect(canvas.parentElement!.style.overflow).toBe('hidden');
-    // Design-space geometry is untouched: only the wrapper is scaled (§4).
-    expect(probed!.api.store.getItemView('a')!.rect.w).toBe(100);
+  it('shows an empty state', () => {
+    render(<Dashboard defaultValue={createDashboard()} locale={ja} />);
+    expect(screen.getByText('まだ何もありません')).toBeTruthy();
   });
 });
 
-describe('VizbrixView', () => {
-  it('renders the same shells with no editing affordances', () => {
-    render(
-      <VizbrixView layout={makeDoc()} instanceId="ro">
-        {(item) => <span data-testid={item.id}>{item.id}</span>}
-      </VizbrixView>,
+describe('<Dashboard> editing', () => {
+  const setup = (extra: Partial<React.ComponentProps<typeof Dashboard>> = {}) => {
+    const onChange = vi.fn();
+    const ref = createRef<DashboardHandle>();
+    const view = render(
+      <Dashboard ref={ref} defaultValue={makeDoc()} bricks={bricks} editable defaultEditing onChange={onChange} {...extra} />,
     );
+    fakeLayout();
+    return { onChange, ref, ...view };
+  };
 
-    expect(document.querySelectorAll('[data-vzb-item]')).toHaveLength(2);
-    expect(itemEl('a').getAttribute('role')).toBeNull();
-    expect(document.querySelector('[data-vzb-guides]')).toBeNull();
-    expect(styleText()).toContain('[data-vzb="ro"] [data-vzb-item="a"]');
+  it('toggles edit mode from the toolbar', () => {
+    const onEditingChange = vi.fn();
+    render(<Dashboard defaultValue={makeDoc()} bricks={bricks} editable onEditingChange={onEditingChange} />);
+    expect(document.querySelector('.vbx-grip')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(document.querySelectorAll('.vbx-grip')).toHaveLength(2);
+    expect(onEditingChange).toHaveBeenCalledWith(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(document.querySelector('.vbx-grip')).toBeNull();
   });
 
-  it('adopts a new layout prop', () => {
-    const { rerender } = render(
-      <VizbrixView layout={makeDoc()} instanceId="ro">
-        {(item) => <span>{item.id}</span>}
-      </VizbrixView>,
-    );
-    const next = defineLayout({
-      container: { base: { width: 1000 }, stackBelow: 0 },
-      items: [{ id: 'c', x: 5, y: 5, w: 10, h: 10 }],
+  it('moves and resizes with the keyboard, coalescing into one undo step', () => {
+    const { onChange, ref } = setup();
+    const a = item('a');
+    act(() => a.focus());
+    expect(a.hasAttribute('data-selected')).toBe(true);
+    fireEvent.keyDown(a, { key: 'ArrowDown' });
+    fireEvent.keyDown(a, { key: 'ArrowDown' });
+    fireEvent.keyDown(a, { key: 'ArrowRight', altKey: true });
+    expect(ref.current!.getValue().items[0]).toMatchObject({ x: 1, y: 16 });
+    fireEvent.keyDown(a, { key: 'ArrowLeft', shiftKey: true });
+    expect(ref.current!.getValue().items[0]).toMatchObject({ x: 1, w: 599 });
+    expect(onChange).toHaveBeenCalledTimes(4);
+    expect(onChange.mock.calls[0]![1]).toMatchObject({ reason: 'move', ids: ['a'] });
+
+    fireEvent.keyDown(a, { key: 'z', ctrlKey: true });
+    fireEvent.keyDown(a, { key: 'z', ctrlKey: true });
+    expect(ref.current!.getValue().items[0]).toMatchObject({ x: 0, y: 0, w: 600 });
+    expect(ref.current!.store.getState().canUndo).toBe(false);
+    fireEvent.keyDown(a, { key: 'z', ctrlKey: true, shiftKey: true });
+    expect(ref.current!.getValue().items[0]).toMatchObject({ x: 1, y: 16 });
+  });
+
+  it('announces keyboard moves in the live region', () => {
+    setup({ locale: ja });
+    const a = item('a');
+    act(() => a.focus());
+    fireEvent.keyDown(a, { key: 'ArrowDown' });
+    expect(document.querySelector('[aria-live]')!.textContent).toBe('Alpha を 0, 8 に移動しました');
+  });
+
+  it('drags with the pointer: previews imperatively, commits once on release', async () => {
+    const { onChange, ref } = setup({ snap: false });
+    const grip = item('a').querySelector('.vbx-grip')!;
+    const before = renders.b;
+    pointer(grip, 'pointerdown', 100, 100);
+    pointer(window, 'pointermove', 110, 140);
+    pointer(window, 'pointermove', 130, 350);
+    await frame();
+    expect(item('a').style.transform).toBe('translate(30px, 250px)');
+    expect(item('a').hasAttribute('data-vbx-dragging')).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+    pointer(window, 'pointerup', 130, 350);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(ref.current!.getValue().items[0]).toMatchObject({ x: 30, y: 250 });
+    expect(item('a').style.transform).toBe('');
+    expect(item('a').hasAttribute('data-vbx-dragging')).toBe(false);
+    // The sibling's content never re-rendered during or after the drag.
+    expect(renders.b).toBe(before);
+  });
+
+  it('snaps to a sibling edge and draws a guide while dragging', async () => {
+    const { ref } = setup();
+    const grip = item('a').querySelector('.vbx-grip')!;
+    pointer(grip, 'pointerdown', 100, 100);
+    pointer(window, 'pointermove', 100, 200);
+    pointer(window, 'pointermove', 103, 297);
+    await frame();
+    expect(document.querySelectorAll('.vbx-guide').length).toBeGreaterThan(0);
+    pointer(window, 'pointerup', 103, 297);
+    // 3px off horizontally snaps back to x=0; 197 snaps to the sibling's bottom edge at 200.
+    expect(ref.current!.getValue().items[0]).toMatchObject({ x: 0, y: 200 });
+    expect(document.querySelectorAll('.vbx-guide')).toHaveLength(0);
+  });
+
+  it('cancels a drag with Escape without committing', async () => {
+    const { onChange } = setup();
+    const grip = item('a').querySelector('.vbx-grip')!;
+    pointer(grip, 'pointerdown', 100, 100);
+    pointer(window, 'pointermove', 300, 300);
+    await frame();
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
-    rerender(
-      <VizbrixView layout={next} instanceId="ro">
-        {(item) => <span>{item.id}</span>}
-      </VizbrixView>,
-    );
-    expect(document.querySelectorAll('[data-vzb-item]')).toHaveLength(1);
-    expect(document.querySelector('[data-vzb-item="c"]')).not.toBeNull();
+    pointer(window, 'pointerup', 300, 300);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(item('a').style.transform).toBe('');
+  });
+
+  it('resizes from a handle, holding the opposite edge', async () => {
+    const { ref } = setup({ snap: false });
+    pointer(item('b').querySelector('.vbx-grip')!, 'pointerdown', 700, 50);
+    pointer(window, 'pointerup', 700, 50);
+    const handle = item('b').querySelector('[data-vbx-handle="sw"]')!;
+    pointer(handle, 'pointerdown', 600, 200);
+    pointer(window, 'pointermove', 650, 260);
+    pointer(window, 'pointermove', 700, 300);
+    await frame();
+    expect(item('b').style.width).toBe('500px');
+    pointer(window, 'pointerup', 700, 300);
+    expect(ref.current!.getValue().items[1]).toMatchObject({ x: 700, y: 0, w: 500, h: 300 });
+  });
+
+  it('multi-selects with shift and moves the group together', async () => {
+    const { ref } = setup({ snap: false });
+    pointer(item('a').querySelector('.vbx-grip')!, 'pointerdown', 10, 10);
+    pointer(window, 'pointerup', 10, 10);
+    pointer(item('b').querySelector('.vbx-grip')!, 'pointerdown', 700, 10, { shiftKey: true });
+    expect(ref.current!.store.getState().selection).toEqual(['a', 'b']);
+    pointer(item('b').querySelector('.vbx-grip')!, 'pointerdown', 700, 10);
+    pointer(window, 'pointermove', 700, 60);
+    pointer(window, 'pointermove', 700, 110);
+    await frame();
+    pointer(window, 'pointerup', 700, 110);
+    expect(ref.current!.getValue().items.map((i) => i.y)).toEqual([100, 100]);
+  });
+
+  it('does not move locked bricks', async () => {
+    const doc = makeDoc();
+    const locked = { ...doc, items: [{ ...doc.items[0]!, locked: true }, doc.items[1]!] };
+    const { onChange } = setup({ defaultValue: locked });
+    pointer(item('a').querySelector('.vbx-grip')!, 'pointerdown', 10, 10);
+    pointer(window, 'pointermove', 200, 200);
+    pointer(window, 'pointerup', 200, 200);
+    fireEvent.keyDown(item('a'), { key: 'ArrowDown' });
+    fireEvent.keyDown(item('a'), { key: 'Delete' });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('removes with Delete and duplicates with Ctrl+D', () => {
+    const { ref } = setup();
+    act(() => item('b').focus());
+    fireEvent.keyDown(item('b'), { key: 'd', ctrlKey: true });
+    expect(ref.current!.getValue().items).toHaveLength(3);
+    act(() => item('a').focus());
+    fireEvent.keyDown(item('a'), { key: 'Delete' });
+    expect(ref.current!.getValue().items.map((i) => i.title)).toEqual(['Beta', 'Beta']);
+  });
+
+  it('adds a brick from the toolbar with the type defaults', () => {
+    const { ref } = setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Note' }));
+    const added = ref.current!.getValue().items[2]!;
+    expect(added).toMatchObject({ type: 'note', title: 'New note', x: 0, y: 200, w: 300, h: 100, props: { text: 'hello' } });
+    expect(screen.getByText('hello')).toBeTruthy();
+    expect(ref.current!.store.getState().selection).toEqual([added.id]);
+  });
+
+  it('edits title, geometry and pin from the brick menu', () => {
+    const onEditItem = vi.fn();
+    const { ref } = setup({ onEditItem });
+    fireEvent.click(screen.getByRole('button', { name: 'Brick options: Alpha' }));
+    const menu = screen.getByRole('dialog');
+    fireEvent.change(within(menu).getByLabelText('Rename'), { target: { value: 'Renamed' } });
+    fireEvent.change(within(menu).getByLabelText('W'), { target: { value: '480' } });
+    fireEvent.change(within(menu).getByLabelText('When the width changes'), { target: { value: 'left' } });
+    expect(ref.current!.getValue().items[0]).toMatchObject({ title: 'Renamed', w: 480, pin: 'left' });
+    fireEvent.click(within(menu).getByRole('button', { name: 'Edit…' }));
+    expect(onEditItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Brick options: Renamed' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Remove/ }));
+    expect(ref.current!.getValue().items.map((i) => i.id)).toEqual(['b']);
+  });
+
+  it('works controlled, and adopts an externally replaced document', () => {
+    let setDoc!: (doc: DashboardDoc) => void;
+    const ref = createRef<DashboardHandle>();
+    function Host() {
+      const [doc, set] = useState(makeDoc);
+      setDoc = set;
+      return <Dashboard ref={ref} value={doc} onChange={set} bricks={bricks} editable defaultEditing />;
+    }
+    render(<Host />);
+    act(() => item('a').focus());
+    fireEvent.keyDown(item('a'), { key: 'ArrowDown' });
+    expect(ref.current!.getValue().items[0]!.y).toBe(8);
+    expect(ref.current!.store.getState().canUndo).toBe(true);
+
+    act(() => setDoc(createDashboard({ items: [{ id: 'solo', type: 'note', title: 'Solo', x: 0, y: 0, w: 300, h: 100 }] })));
+    expect(screen.getByRole('heading', { name: 'Solo' })).toBeTruthy();
+    expect(item('a')).toBeNull();
+  });
+
+  it('re-renders only the brick that changed', () => {
+    const { ref } = setup();
+    const before = { ...renders };
+    act(() => ref.current!.update('a', { props: { text: 'changed' } }));
+    expect(screen.getByText('changed')).toBeTruthy();
+    expect(renders.a).toBe(before.a! + 1);
+    expect(renders.b).toBe(before.b);
+  });
+});
+
+describe('<DashboardStatic>', () => {
+  it('produces the same layout CSS and brick markup as the client component, with no handlers', () => {
+    const doc = makeDoc();
+    const html = renderToStaticMarkup(<DashboardStatic id="dash" value={doc} bricks={bricks} />);
+    expect(html).toContain('data-vbx-scope="dash"');
+    expect(html).toContain('[data-vbx-item="a"]{left:0px;top:0px;width:50%;height:200px}');
+    expect(html).toContain('<h3 class="vbx-brick-title"');
+    expect(html).toContain('first');
+    expect(html).not.toContain('tabindex');
+
+    const { container } = render(<Dashboard defaultValue={doc} bricks={bricks} />);
+    const strip = (s: string): string => s.replace(/id="[^"]*"|aria-labelledby="[^"]*"/g, '');
+    const staticBrick = new DOMParser().parseFromString(html, 'text/html').querySelector('[data-vbx-item="a"]')!;
+    expect(strip(container.querySelector('[data-vbx-item="a"]')!.outerHTML)).toBe(strip(staticBrick.outerHTML));
   });
 });

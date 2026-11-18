@@ -1,473 +1,118 @@
-/* vizbrix playground — host-app chrome + widget skins.
-   Everything under [data-vzb]/[data-vzb-item] is POSITIONED by vizbrix's own
-   generated <style> element; nothing here sets left/top/width/height on an
-   item. This file only styles what's inside/around that geometry. */
-
 :root {
-  color-scheme: light dark;
-  --bg: #f4f5f7;
-  --surface: #ffffff;
-  --surface-2: #eef0f3;
-  --border: #dcdfe4;
-  --text: #16181d;
-  --text-dim: #5b6270;
-  --accent: #3b6ef6;
-  --accent-contrast: #ffffff;
-  --good: #1a9e6b;
-  --bad: #e0433c;
-  --alert-bg: #fff4f2;
-  --alert-border: #f3a89f;
-  --focus: #3b6ef6;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14161a;
-    --surface: #1d2025;
-    --surface-2: #23262c;
-    --border: #33373f;
-    --text: #eceef1;
-    --text-dim: #9aa1ad;
-    --accent: #6d93ff;
-    --accent-contrast: #0b0d10;
-    --good: #37c98e;
-    --bad: #ff6b62;
-    --alert-bg: #2a1917;
-    --alert-border: #5c2b26;
-    --focus: #6d93ff;
-  }
-}
-
-* {
-  box-sizing: border-box;
+  font-family: var(--vbx-font);
 }
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
+  color: var(--vbx-text);
+  background: var(--vbx-plane);
 }
 
-button,
-input,
-select,
-textarea {
-  font: inherit;
-  color: inherit;
-}
-
-:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
-.app {
-  display: flex;
-  flex-direction: column;
+.page {
   min-height: 100vh;
 }
 
-/* ---------------- toolbar ---------------- */
-
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 14px;
-  padding: 12px 18px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+.topbar {
   position: sticky;
   top: 0;
-  z-index: 10;
-}
-
-.toolbar__brand {
+  z-index: 100;
   display: flex;
-  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 24px;
+  background: color-mix(in srgb, var(--vbx-plane) 86%, transparent);
+  border-bottom: 1px solid var(--vbx-border);
+  backdrop-filter: blur(10px);
+}
+
+.brand {
+  display: flex;
   gap: 8px;
-  margin-right: 8px;
+  align-items: center;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
-.toolbar__logo {
-  font-weight: 700;
-  font-size: 1.05rem;
-  letter-spacing: -0.02em;
+.logo {
+  width: 18px;
+  height: 18px;
+  background:
+    linear-gradient(var(--vbx-series-1) 0 0) 0 0 / 8px 8px,
+    linear-gradient(var(--vbx-series-2) 0 0) 10px 0 / 8px 8px,
+    linear-gradient(var(--vbx-series-3) 0 0) 0 10px / 18px 8px;
+  background-repeat: no-repeat;
+  border-radius: 3px;
 }
 
-.toolbar__tagline {
-  font-size: 0.75rem;
-  color: var(--text-dim);
+.tag {
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--vbx-muted);
+  border: 1px solid var(--vbx-border);
+  border-radius: 999px;
 }
 
-.toolbar__group {
+.controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.segmented {
   display: inline-flex;
-  gap: 4px;
-  padding: 3px;
-  background: var(--surface-2);
+  padding: 2px;
+  background: var(--vbx-hover);
   border-radius: 8px;
 }
 
-.btn {
-  appearance: none;
-  border: 1px solid transparent;
-  background: transparent;
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 0.82rem;
+.segmented button,
+.ghost {
+  height: 28px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--vbx-text-2);
   cursor: pointer;
-  color: var(--text);
-}
-
-.toolbar__group .btn {
-  background: transparent;
-}
-
-.btn:hover:not(:disabled) {
-  background: var(--border);
-}
-
-.btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.btn--active {
-  background: var(--accent);
-  color: var(--accent-contrast);
-}
-
-.btn--active:hover {
-  background: var(--accent);
-}
-
-.field {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.82rem;
-  color: var(--text-dim);
-}
-
-.field select {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  background: none;
+  border: 0;
   border-radius: 6px;
-  padding: 4px 6px;
-  color: var(--text);
 }
 
-/* ---------------- width control ---------------- */
-
-.width-control {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 18px;
-  font-size: 0.82rem;
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.width-control input[type='range'] {
-  flex: 0 1 320px;
-}
-
-.width-control__value {
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-  min-width: 5.5ch;
-}
-
-.width-control__readout {
-  font-variant-numeric: tabular-nums;
-  color: var(--text-dim);
-  padding-left: 10px;
-  border-left: 1px solid var(--border);
-}
-
-/* ---------------- canvas ---------------- */
-
-.canvas-shell {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-  padding: 24px;
-  overflow-x: auto;
-  background:
-    linear-gradient(var(--border) 1px, transparent 1px) 0 0 / 100% 24px,
-    var(--bg);
-}
-
-.canvas-frame {
-  max-width: 100%;
-  min-width: 280px;
-  transition: width 80ms ease-out;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--surface-2);
-}
-
-/* The dashboard root itself — vizbrix sets position/container-type inline
-   via its generated stylesheet; this only adds paint. */
-.dashboard {
-  background: var(--surface-2);
-}
-
-.status-line {
-  padding: 6px 18px;
-  font-size: 0.75rem;
-  color: var(--text-dim);
-  text-align: center;
-}
-
-/* ---------------- item state affordances ---------------- */
-/* These attributes are written by vizbrix itself (§1.28): data-selected,
-   data-dragging, data-resizing, data-locked on the item root. */
-
-[data-vzb-item] {
-  border-radius: 10px;
-}
-
-[data-vzb-item][data-selected] .widget {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-}
-
-[data-vzb-item][data-dragging] .widget,
-[data-vzb-item][data-resizing] .widget {
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
-  cursor: grabbing;
-}
-
-[data-vzb-item][data-locked] .widget__bar {
-  cursor: default;
-}
-
-/* Resize handles: vizbrix renders these as [data-vzb-handle] spans with
-   their own inline geometry; we only add interaction polish. */
-[data-vzb-handle] {
-  transition: transform 100ms ease;
-}
-
-[data-vzb-handle]:hover {
-  transform: scale(1.25);
-}
-
-/* ---------------- widget chrome ---------------- */
-
-.widget {
-  height: 100%;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.widget--header {
-  flex-direction: row;
-  align-items: center;
-  padding: 0 16px;
-  background: var(--surface);
-  border: none;
-  border-radius: 0;
-  border-bottom: 1px solid var(--border);
+.segmented button[aria-pressed='true'] {
   font-weight: 600;
-  font-size: 0.9rem;
+  color: var(--vbx-text);
+  background: var(--vbx-raised);
+  box-shadow: var(--vbx-shadow);
 }
 
-.widget--alert {
-  background: var(--alert-bg);
-  border-color: var(--alert-border);
+.ghost {
+  border: 1px solid var(--vbx-border);
 }
 
-.widget__bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--border);
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
+.ghost:hover {
+  background: var(--vbx-hover);
 }
 
-.widget__title {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.stage {
+  padding: 20px 24px 64px;
+  margin: 0 auto;
+  transition: max-width 0.25s ease;
 }
 
-.widget__tools {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.widget__iconbtn {
-  appearance: none;
-  border: 1px solid transparent;
-  background: transparent;
-  border-radius: 5px;
-  width: 22px;
-  height: 22px;
-  line-height: 1;
-  font-size: 0.78rem;
-  cursor: pointer;
-  color: var(--text-dim);
-}
-
-.widget__iconbtn:hover {
-  background: var(--border);
-  color: var(--text);
-}
-
-.widget__iconbtn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.widget__lockbadge {
-  font-size: 0.75rem;
-  opacity: 0.7;
-}
-
-.widget__body {
-  flex: 1;
-  min-height: 0;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-}
-
-/* ---------------- widget-specific content ---------------- */
-
-.kpi {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 6px;
-  height: 100%;
-}
-
-.kpi__value {
-  font-size: 1.6rem;
-  font-weight: 700;
+.title {
+  margin: 0 8px 0 0;
+  font-size: 20px;
+  font-weight: 650;
   letter-spacing: -0.02em;
 }
 
-.kpi__delta {
-  font-size: 0.82rem;
-  font-weight: 600;
-}
-
-.kpi__delta--up {
-  color: var(--good);
-}
-
-.kpi__delta--down {
-  color: var(--bad);
-}
-
-.chart {
-  flex: 1;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-}
-
-.chart__area {
-  fill: color-mix(in srgb, var(--accent) 18%, transparent);
-  stroke: none;
-}
-
-.chart__line {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.6;
-  vector-effect: non-scaling-stroke;
-}
-
-.notes {
-  flex: 1;
-  width: 100%;
-  resize: none;
-  border: none;
-  background: transparent;
-  font-size: 0.85rem;
-  line-height: 1.5;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-.clock {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: clamp(1.1rem, 12cqw, 2rem);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-
-.list {
-  margin: 0;
-  padding-left: 18px;
-  font-size: 0.85rem;
-  line-height: 1.7;
-  overflow: auto;
-}
-
-.alert__message {
-  margin: 0;
-  font-size: 0.85rem;
-  line-height: 1.5;
-  color: var(--text);
-}
-
-/* ---------------- emitted CSS pane ---------------- */
-
-.css-pane {
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.css-pane__toggle {
-  display: block;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  padding: 10px 18px;
-  font-size: 0.82rem;
-  color: var(--text-dim);
-  cursor: pointer;
-}
-
-.css-pane__toggle:hover {
-  color: var(--text);
-}
-
-.css-pane__code {
-  margin: 0;
-  padding: 12px 18px 20px;
-  max-height: 320px;
-  overflow: auto;
-  font-size: 0.72rem;
-  line-height: 1.5;
-  background: var(--surface-2);
-  white-space: pre-wrap;
-  word-break: break-word;
+@media (max-width: 600px) {
+  .topbar,
+  .stage {
+    padding-inline: 12px;
+  }
 }

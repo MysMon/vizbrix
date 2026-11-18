@@ -1,107 +1,60 @@
-#!/usr/bin/env node
-/**
- * Packaging smoke test.
- *
- * `pnpm build` and the size check both read dist/ directly, so neither one
- * would notice a broken `exports` map, a typo'd dist path, or a subpath that
- * only resolves under `moduleResolution: bundler` but not through Node's
- * actual resolver. This script packs the real tarball (the artifact `npm
- * publish` would upload), installs it into a scratch project exactly the way
- * a consumer would, and resolves every published subpath through Node's own
- * ESM and CJS loaders. If this passes, the package is installable and
- * importable as shipped — not just buildable.
- *
- * Dependency-free by design (only node:child_process, node:fs, node:os,
- * node:path) so it never needs its own install step.
- */
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
+// Packs the library, installs the tarball into a scratch project next to
+// react, and checks that every published subpath resolves and works under
+// both ESM and CJS — including that server-safe entries carry no
+// "use client" banner and client entries do. Run after `pnpm build`.
+import { execSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import process from 'node:process';
 
-const repoRoot = process.cwd();
+const run = (cmd, cwd) => execSync(cmd, { cwd, stdio: ['ignore', 'pipe', 'inherit'] }).toString();
+const root = process.cwd();
+const dir = mkdtempSync(join(tmpdir(), 'vizbrix-smoke-'));
 
-/** Subpath -> a value export that only exists if the real module loaded. */
-const ENTRIES = {
-  vizbrix: 'SCHEMA_VERSION',
-  'vizbrix/schema': 'validate',
-  'vizbrix/react': 'Vizbrix',
-  'vizbrix/react/view': 'VizbrixView',
-  'vizbrix/react/static': 'VizbrixStatic',
-  'vizbrix/locales/ja': 'ja',
-};
-
-function run(cmd, args, opts = {}) {
-  return execFileSync(cmd, args, { encoding: 'utf8', stdio: 'pipe', ...opts });
-}
-
-function esmProbe() {
-  const checks = Object.entries(ENTRIES)
-    .map(([spec, symbol]) => `
-  {
-    const m = await import(${JSON.stringify(spec)});
-    if (!(${JSON.stringify(symbol)} in m)) {
-      throw new Error(${JSON.stringify(`ESM: ${spec} is missing expected export "${symbol}"`)});
-    }
-  }`)
-    .join('\n');
-  return `(async () => {${checks}\n  console.log('esm ok');\n})().catch((err) => { console.error(err); process.exit(1); });\n`;
-}
-
-function cjsProbe() {
-  const checks = Object.entries(ENTRIES)
-    .map(([spec, symbol]) => `
-  {
-    const m = require(${JSON.stringify(spec)});
-    if (!(${JSON.stringify(symbol)} in m)) {
-      throw new Error(${JSON.stringify(`CJS: ${spec} is missing expected export "${symbol}"`)});
-    }
-  }`)
-    .join('\n');
-  return `try {${checks}\n  console.log('cjs ok');\n} catch (err) { console.error(err); process.exit(1); }\n`;
-}
-
-let workDir;
-let exitCode = 0;
 try {
-  workDir = mkdtempSync(join(tmpdir(), 'vizbrix-smoke-'));
-  const packDir = join(workDir, 'pack');
-  const consumerDir = join(workDir, 'consumer');
+  const tarball = run(`npm pack --silent --pack-destination ${dir}`, root).trim().split('\n').pop();
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'smoke', private: true, type: 'module' }));
+  const reactPath = join(root, 'node_modules/react');
+  const reactDomPath = join(root, 'node_modules/react-dom');
+  run(`npm install --silent --no-audit --no-fund ${join(dir, tarball)} ${reactPath} ${reactDomPath}`, dir);
 
-  console.log(`[smoke-pack] packing tarball into ${packDir}`);
-  run('pnpm', ['pack', '--pack-destination', packDir], { cwd: repoRoot });
-  const tarball = readdirSync(packDir).find((f) => f.endsWith('.tgz'));
-  if (!tarball) throw new Error('pnpm pack did not produce a .tgz file');
-  const tarballPath = join(packDir, tarball);
-  console.log(`[smoke-pack] tarball: ${tarball}`);
+  const body = `
+    const assert = (cond, msg) => { if (!cond) { console.error('FAIL ' + msg); process.exit(1); } };
+    const core = await load('vizbrix');
+    const react = await load('vizbrix/react');
+    const stat = await load('vizbrix/react/static');
+    const charts = await load('vizbrix/charts');
+    const bricks = await load('vizbrix/bricks');
+    const ja = await load('vizbrix/locales/ja');
+    const { createElement } = await load('react');
+    const { renderToStaticMarkup } = await load('react-dom/server');
+    assert(typeof core.createDashboard === 'function', 'core.createDashboard');
+    assert(typeof react.Dashboard === 'object' || typeof react.Dashboard === 'function', 'react.Dashboard');
+    assert(typeof charts.LineChart === 'function', 'charts.LineChart');
+    assert(typeof bricks.builtinBricks.line.render === 'function', 'bricks.builtinBricks');
+    assert(ja.ja.lang === 'ja', 'locales/ja');
+    const doc = core.createDashboard({ items: [{ id: 'a', type: 'stat', title: 'T', w: 300, h: 120, props: { value: 42 } }] });
+    const html = renderToStaticMarkup(createElement(stat.DashboardStatic, { id: 'd', value: doc, bricks: bricks.builtinBricks }));
+    assert(html.includes('42') && html.includes('data-vbx-item="a"'), 'static render');
+    const html2 = renderToStaticMarkup(createElement(react.Dashboard, { defaultValue: doc, bricks: bricks.builtinBricks }));
+    assert(html2.includes('42'), 'client component SSR');
+    console.log('ok');
+  `;
+  writeFileSync(join(dir, 'esm.mjs'), `const load = (s) => import(s);${body}`);
+  writeFileSync(join(dir, 'cjs.cjs'), `const load = async (s) => require(s);(async () => {${body}})();`);
+  console.log('esm:', run('node esm.mjs', dir).trim());
+  console.log('cjs:', run('node cjs.cjs', dir).trim());
 
-  console.log(`[smoke-pack] installing into fresh project at ${consumerDir}`);
-  execFileSync('mkdir', ['-p', consumerDir]);
-  run('npm', ['init', '-y'], { cwd: consumerDir });
-  run('npm', ['install', tarballPath, 'react', 'react-dom'], { cwd: consumerDir });
-
-  const esmFile = join(consumerDir, 'smoke.mjs');
-  const cjsFile = join(consumerDir, 'smoke.cjs');
-  writeFileSync(esmFile, esmProbe());
-  writeFileSync(cjsFile, cjsProbe());
-
-  console.log('[smoke-pack] resolving every subpath export via ESM import()');
-  console.log(run('node', [esmFile], { cwd: consumerDir }).trim());
-
-  console.log('[smoke-pack] resolving every subpath export via CJS require()');
-  console.log(run('node', [cjsFile], { cwd: consumerDir }).trim());
-
-  console.log('[smoke-pack] all subpaths resolved in both module systems');
-} catch (err) {
-  exitCode = 1;
-  if (err.stdout) process.stderr.write(err.stdout);
-  if (err.stderr) process.stderr.write(err.stderr);
-  console.error(`[smoke-pack] FAILED: ${err.message}`);
-} finally {
-  if (workDir) {
-    rmSync(workDir, { recursive: true, force: true });
+  const pkg = join(dir, 'node_modules/vizbrix/dist');
+  const banner = (f) => readFileSync(join(pkg, f), 'utf8').trimStart().startsWith('"use client"');
+  for (const f of ['react/index.js', 'react/index.cjs', 'charts/index.js', 'charts/index.cjs']) {
+    if (!banner(f)) throw new Error(`${f} is missing its "use client" banner`);
   }
+  for (const f of ['index.js', 'react/static.js', 'bricks/index.js', 'locales/ja.js', 'react/static.cjs', 'bricks/index.cjs']) {
+    if (banner(f)) throw new Error(`${f} must not carry a "use client" banner`);
+  }
+  readFileSync(join(pkg, 'styles.css'));
+  console.log('banners and stylesheet: ok');
+} finally {
+  rmSync(dir, { recursive: true, force: true });
 }
-
-process.exit(exitCode);

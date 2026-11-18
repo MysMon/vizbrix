@@ -1,22 +1,24 @@
 {
   "name": "vizbrix",
-  "version": "0.1.0",
-  "description": "Free-placement dashboard layout engine for React. Pixel-precise placement that actually reflows.",
+  "version": "0.2.0",
+  "description": "Dashboard bricks for React: a free-placement layout that reflows, charts and figures to fill it, and an editor to arrange them.",
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "**/*.css"
+  ],
   "license": "MIT",
   "author": "MysMon",
   "keywords": [
     "dashboard",
     "layout",
-    "free-placement",
-    "freeform",
+    "charts",
+    "widgets",
     "drag-and-drop",
     "resize",
+    "responsive",
     "react",
     "typescript",
-    "headless",
-    "canvas"
+    "data-visualization"
   ],
   "repository": {
     "type": "git",
@@ -44,16 +46,6 @@
         "default": "./dist/index.cjs"
       }
     },
-    "./schema": {
-      "import": {
-        "types": "./dist/schema.d.ts",
-        "default": "./dist/schema.js"
-      },
-      "require": {
-        "types": "./dist/schema.d.cts",
-        "default": "./dist/schema.cjs"
-      }
-    },
     "./react": {
       "import": {
         "types": "./dist/react/index.d.ts",
@@ -62,16 +54,6 @@
       "require": {
         "types": "./dist/react/index.d.cts",
         "default": "./dist/react/index.cjs"
-      }
-    },
-    "./react/view": {
-      "import": {
-        "types": "./dist/react/view.d.ts",
-        "default": "./dist/react/view.js"
-      },
-      "require": {
-        "types": "./dist/react/view.d.cts",
-        "default": "./dist/react/view.cjs"
       }
     },
     "./react/static": {
@@ -84,6 +66,26 @@
         "default": "./dist/react/static.cjs"
       }
     },
+    "./charts": {
+      "import": {
+        "types": "./dist/charts/index.d.ts",
+        "default": "./dist/charts/index.js"
+      },
+      "require": {
+        "types": "./dist/charts/index.d.cts",
+        "default": "./dist/charts/index.cjs"
+      }
+    },
+    "./bricks": {
+      "import": {
+        "types": "./dist/bricks/index.d.ts",
+        "default": "./dist/bricks/index.js"
+      },
+      "require": {
+        "types": "./dist/bricks/index.d.cts",
+        "default": "./dist/bricks/index.cjs"
+      }
+    },
     "./locales/ja": {
       "import": {
         "types": "./dist/locales/ja.d.ts",
@@ -94,6 +96,7 @@
         "default": "./dist/locales/ja.cjs"
       }
     },
+    "./styles.css": "./dist/styles.css",
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -106,7 +109,9 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "check": "pnpm typecheck && pnpm lint && pnpm test",
-    "prepublishOnly": "pnpm check && pnpm build"
+    "prepublishOnly": "pnpm check && pnpm build",
+    "size": "node scripts/check-entry-sizes.mjs",
+    "smoke": "node scripts/smoke-pack.mjs"
   },
   "publishConfig": {
     "access": "public",

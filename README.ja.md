@@ -1,343 +1,275 @@
 # vizbrix
 
-**React ダッシュボードのための自由配置レイアウトエンジン。ピクセル単位で置けて、ちゃんとリフローする。**
+**React のためのダッシュボード・ブリック。自由に置けて、ちゃんとリフローするレイアウト。そこに並べるチャートと数値タイル。そして並べ替えるためのエディタ。**
 
 [![CI](https://github.com/MysMon/vizbrix/actions/workflows/ci.yml/badge.svg)](https://github.com/MysMon/vizbrix/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
-[![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen)](#バンドルサイズ)
-[![types: included](https://img.shields.io/badge/types-included-blue)](#typescript)
-[![React 18 | 19](https://img.shields.io/badge/react-18%20%7C%2019-61dafb)](#インストール)
-
-ウィジェットはドロップした場所にそのまま置かれます。座標もサイズも自由、重ねても構いません。
-それでいて、コンテナ幅が変わったときに破綻しません。
 
 *[English README →](./README.md)*
 
+```tsx
+import { createDashboard } from 'vizbrix';
+import { Dashboard } from 'vizbrix/react';
+import { builtinBricks } from 'vizbrix/bricks';
+import 'vizbrix/styles.css';
+
+const layout = createDashboard({
+  items: [
+    { id: 'mrr', type: 'stat', title: 'MRR', x: 0, y: 0, w: 300, h: 148,
+      props: { data: 'mrr', format: 'currency:JPY', deltaLabel: '前月比' } },
+    { id: 'sales', type: 'line', title: '売上推移', x: 300, y: 0, w: 900, h: 320,
+      props: { data: 'sales', x: 'month', series: ['実績', '計画'] } },
+  ],
+});
+
+export function Page() {
+  const [doc, setDoc] = useState(layout);
+  return (
+    <Dashboard
+      value={doc}
+      onChange={setDoc}          // ドラッグ1回・undo1回につき1度だけ呼ばれる
+      bricks={builtinBricks}
+      data={{ mrr: { value: 62_380_000, delta: 0.057 }, sales: rows }}
+      editable                   // 「編集」ボタン・追加・undo/redo が付く
+    />
+  );
+}
+```
+
+これで、KPI タイルと折れ線グラフが並び、利用者がドラッグとリサイズで組み替えられ、タブレット幅で
+2 列・スマートフォン幅で 1 列に自動で組み替わるダッシュボードになります。ランタイム依存はゼロです。
+
 ---
 
-## なぜ作ったか
+## 考え方
 
-ダッシュボードのレイアウトツールは、たいてい2つの形のどちらかに落ち着きます。そしてどちらも、
-自由配置を二級市民として扱います。
+**ダッシュボードはブリックの集まり。** ブリックは「種類 (`type`)・位置・設定 (`props`)」だけを持つ
+JSON で、描画方法はレジストリ (`bricks`) が、データは `data` が与えます。レイアウト定義はそのまま
+データベースに保存でき、データは画面側で差し替えられます。
 
-**カラムグリッドエンジン**は、位置を**セル座標（整数）**として保存します。`x, y, w, h` の意味は
-「列と行」です。これは表示上のデフォルトではなく、保存形式そのものであり、衝突判定の単位であり、
-永続化フォーマットでもあります。したがって自由配置は設定で到達できる場所にありません。この種の
-エンジンが用意する「フリー」モードは、別のモデルを表現しているのではなく、エンジン本来の挙動を
-**無効化する**フラグです（詰め直しをやめる、衝突処理を手放す）。
+**自由配置が保存形式。** 位置は列番号ではなく、設計幅（既定 1200）に対する矩形 `x, y, w, h` です。
+グリッドは保存モデルではなく、操作時のスナップ先のひとつにすぎません。
 
-**フリーフォームな変形レイヤー**は任意のピクセル配置を見事に扱いますが、ダッシュボードの語彙を
-持ちません。衝突ポリシーも、永続化スキーマも、レスポンシブ戦略も、アクセシビリティもありません。
-各チームがそれらを手作業で組み上げてキャンバスエディタを作っています。
+**それでもリフローする。** 自由配置を「縮小するだけ」で終わらせません。
 
-**vizbrix はその中間にあります。** 位置は連続的で解像度非依存な*式*として永続化されます。12カラム
-グリッドは複数あるスナッププロバイダのひとつにすぎず、操作時に切り替わるだけでモデルには焼き込まれ
-ません。レスポンシブはブレークポイントごとに手書きするレイアウト配列ではなく、アイテムごとの計算結果
-です。そしてシリアライズされたドキュメントは、データベースに入れて構わないバージョン付きの契約です。
+- 矩形は**タイル**として保存されます。隣り合うブリックは辺を共有し、ブリック間の余白 (`gap`) は
+  描画時に引かれます。だから幅が変わっても余白は常に同じピクセル数です。
+- 横方向の追従はブリックごとに選べます (`pin`)。既定は `scale`（幅に比例）。`left` / `right`
+  （固定幅で端に固定）、`stretch`（両端固定で幅が伸縮）、`center` も選べます。
+- ブレークポイント未満では、読み順（行ごとに左から右）でブリックを N 列に流し込んだレイアウトが
+  **自動で導出**されます。その幅で一度でも手で動かすと、その幅専用の配置として保存されます。
+- ブレークポイントはビューポートではなく**ダッシュボード自身の幅**（コンテナクエリ）で切り替わり
+  ます。サイドバーの開閉や分割ペインの中でも正しく動きます。
 
-一行でいえば——**縮むだけの自由配置ではなく、リフローする自由配置。**
+**レイアウトは静的な CSS。** どの幅の配置も `left: calc(25% + 4px)` のような CSS にコンパイルされ
+ます。サーバーは画面幅を知らなくても正しい初回描画を返せ、レイアウトのための JavaScript は実行
+されません。
 
 ---
 
 ## インストール
 
 ```sh
-npm install vizbrix      # pnpm add vizbrix · yarn add vizbrix
+npm install vizbrix
 ```
 
-React 18 / 19 は**オプショナルな** peer 依存です。コアエンジンには React への依存が一切なく、
-Vue / Svelte / バニラ用のアダプタを書くのに必要なのは公開されたコア API だけです。
+React 18 / 19 に対応しています。スタイルは `import 'vizbrix/styles.css'` で読み込みます。
 
-## 60秒でわかる使い方
+| エントリ | 中身 | gzip |
+|---|---|---|
+| `vizbrix` | ドキュメントモデル、読み込み/保存、ジオメトリ、ストア（フレームワーク非依存） | 約 10 KB |
+| `vizbrix/react` | `<Dashboard>` — 表示とエディタ | 約 13 KB |
+| `vizbrix/react/static` | `<DashboardStatic>` — フックなしの Server Component | 約 3 KB |
+| `vizbrix/charts` | チャートと数値タイル。単体でも使えます | 約 11 KB |
+| `vizbrix/bricks` | 組み込みブリックのレジストリ | 約 2 KB |
+| `vizbrix/locales/ja` | 日本語の文言とブリック名 | 約 2 KB |
+| `vizbrix/styles.css` | テーマ（ライト/ダーク） | 約 5 KB |
+
+---
+
+## 組み込みブリック
+
+| type | 用途 | 主な props |
+|---|---|---|
+| `stat` | 主要な数値・前期比・スパークライン | `value` `format` `delta` `deltaLabel` `upIsGood` `trend` |
+| `line` / `area` | 時系列。複数系列、積み上げ、スムージング | `data` `x` `series` `stacked` `curve` `xType` `yFormat` |
+| `bar` | カテゴリ比較。並列/積み上げ、縦/横 | `data` `x` `series` `stacked` `horizontal` `labels` |
+| `donut` / `segmented` | 構成比 | `data` `label` `value` `format` `centerLabel` |
+| `barlist` | ランキング | `data` `label` `value` `limit` |
+| `meter` | 目標に対する進捗 | `value` `max` `status` `statusLabel` |
+| `table` | 並べ替え可能な表。行は仮想化 | `data` `columns` |
+| `text` | 見出し・注記（枠なし） | `text` `variant` |
+
+`data` には行の配列を直接書くか、`<Dashboard data={…}>` に渡したデータセットの**名前**を書きます。
+`stat` と `meter` は、名前で指したオブジェクトの `value` や `delta` を取り込みます。
+
+`format` は保存できる値です: `'auto'`（1 万以上で自動的に短縮表記）、`'number'`、`'integer'`、
+`'compact'`、`'percent'`、`'currency:JPY'`、または `Intl.NumberFormatOptions`。
+
+日本語のブリック名にするには:
 
 ```tsx
-import { defineLayout } from 'vizbrix';
-import { Vizbrix } from 'vizbrix/react';
+import { builtinBricks, withLabels } from 'vizbrix/bricks';
+import { ja, brickLabelsJa } from 'vizbrix/locales/ja';
 
-const layout = defineLayout({
-  container: { base: { width: 1200 }, sizes: { md: { maxWidth: 900 } } },
-  items: [
-    { id: 'revenue', x: 0, y: 0, w: 580, h: 260 },
-    { id: 'signups', x: 620, y: 0, w: 580, h: 260, anchor: { x: 'end' } },
-    { id: 'funnel', x: 0, y: 300, w: 1200, h: 320, anchor: { x: 'both' } },
-  ],
+<Dashboard bricks={withLabels(builtinBricks, brickLabelsJa)} locale={ja} … />
+```
+
+### 自前のブリック
+
+```tsx
+import { defineBrick, resolveData } from 'vizbrix/react';
+
+const map = defineBrick<{ data?: string; zoom?: number }>({
+  label: '地図',                       // 「追加」メニューに出る名前
+  defaults: { w: 600, h: 400, title: '拠点', props: { zoom: 5 } },
+  flush: true,                         // 本文の余白をなくす
+  render: ({ props, data }) => <StoreMap points={resolveData(props.data, data)} zoom={props.zoom} />,
 });
 
-export function Dashboard() {
-  return (
-    <Vizbrix defaultLayout={layout} mode="edit" onLayoutChange={(doc) => save(doc)}>
-      {(item, ui) => (
-        <article className="card">
-          <header {...ui.handleProps}>{item.id}</header>
-          <button {...ui.moveButtonProps}>移動</button>
-          <Widget id={item.id} />
-        </article>
-      )}
-    </Vizbrix>
-  );
+<Dashboard bricks={{ ...builtinBricks, map }} … />
+```
+
+レジストリにない `type` は `renderItem` で受けられます。どちらにもなければプレースホルダを表示し、
+描画中に例外を投げたブリックはそのブリックだけがエラー表示になります。
+
+---
+
+## チャートを単体で使う
+
+`vizbrix/charts` はダッシュボードなしでも使えます。親要素の大きさに合わせて描画するので、高さの
+決まった要素に入れるか `height` を渡します。
+
+```tsx
+import { LineChart, BarChart, StatTile, DataTable } from 'vizbrix/charts';
+
+<LineChart data={rows} x="date" series={[{ key: 'pv', label: 'PV' }, 'uu']} height={280} lang="ja" />
+<BarChart data={rows} x="region" series={['sales']} horizontal labels height={240} />
+<StatTile label="契約社数" value={1284} delta={0.042} deltaLabel="前月比" />
+<DataTable data={deals} columns={[{ key: 'name' }, { key: 'amount', format: 'currency:JPY' }]} height={360} />
+```
+
+- 軸は 1 本。系列の色は宣言順で固定され、系列を隠しても残りの色は変わりません。
+- 折れ線は最寄りの X にスナップする十字線と、全系列を並べたツールチップ。棒はカテゴリ全体がホバー
+  領域です。どちらも矢印キーで同じ値を読めます。
+- 折れ線・棒グラフは表表示に切り替えられ、構成比のチャートは数値を凡例に併記します。色だけで系列を区別させません。
+- 描画点数は表示ピクセル数に合わせて間引かれます（LTTB）。10 万点の系列でも 1,000 点とほぼ同じ
+  コストです。`DataTable` は表示範囲の行だけをマウントします。
+- 既定の配色は、隣り合う系列が色覚多様性のもとでも区別できる順序で検証済みです。
+
+---
+
+## 編集
+
+`editable` を付けるとツールバーに「編集」が現れます。編集モードでは:
+
+| 操作 | 方法 |
+|---|---|
+| 移動 | ドラッグ／矢印キー（Alt で 1 単位） |
+| サイズ変更 | 8 方向のハンドル／Shift＋矢印キー |
+| 複数選択 | Shift（または Ctrl/⌘）＋クリック。まとめて移動できます |
+| スナップ | 他ブリックの辺・中心、キャンバスの端、8px グリッド。Ctrl/⌘ を押している間は無効 |
+| 追加・複製・削除 | 「追加」メニュー／Ctrl+D／Delete |
+| 重ね順 | `]` で最前面、`[` で最背面 |
+| 元に戻す・やり直す | Ctrl+Z／Ctrl+Shift+Z（連続したキー操作は 1 手にまとまります） |
+| キャンセル | ドラッグ中に Esc |
+
+各ブリックの「⋯」メニューからは、名前の変更、**数値での位置・サイズ指定**（ドラッグなしで配置
+できる代替手段）、幅の追従方法、ロック、削除ができます。`onEditItem` を渡すと「設定…」が加わるので、
+ブリックの設定画面はアプリ側の UI で開けます。
+
+ドラッグ中は対象要素のスタイルを直接書き換えるだけで、React の再レンダリングは起きません。確定は
+離した瞬間の 1 回で、変更のあったブリックだけが再描画されます。編集不可 (`editable` なし) の
+ダッシュボードはイベントリスナーを一切登録しません。
+
+### 主な props
+
+| prop | 説明 |
+|---|---|
+| `value` / `defaultValue` / `onChange(doc, meta)` | 制御／非制御。`meta.reason` は `move` `resize` `add` `undo` など |
+| `bricks` / `data` / `renderItem` | ブリックのレジストリ、データセット、未登録 type の描画 |
+| `editable` / `editing` / `defaultEditing` / `onEditingChange` | 編集の可否と編集モード |
+| `toolbar` / `header` | ツールバーの表示、左側に置くタイトルやフィルタ |
+| `snap` | `{ grid, items, threshold }` または `false` |
+| `locale` / `theme` | 文言（既定は英語）、`'light' \| 'dark' \| 'auto'` |
+| `onEditItem` | ブリックメニューの「設定…」 |
+| `ref` | `add` `remove` `update` `undo` `redo` `getValue` `reveal` `store` |
+
+---
+
+## 保存と読み込み
+
+```ts
+import { parseDashboard, serializeDashboard } from 'vizbrix';
+
+await save(serializeDashboard(doc));        // キー順が安定。同じ内容なら同じバイト列
+
+const { doc, ok, issues } = parseDashboard(await load());
+if (!ok) report(issues);                     // 例: [{ path: 'items[3].w', message: '…', severity: 'error' }]
+```
+
+`parseDashboard` は**例外を投げません**。壊れた JSON でも、必ず描画できるドキュメントと、修復した
+箇所の一覧を返します。ドキュメントは `version` を持ち、未知のキーは読み書きを通じて保持されるので、
+新しいバージョンが書いたデータを古いバージョンが壊すことはありません。
+
+セルベースのグリッドレイアウト（`{ i, x, y, w, h }`）からは `importFromGrid(cells, { cols, rowHeight })`
+で変換できます。
+
+## サーバーレンダリング
+
+```tsx
+import { DashboardStatic } from 'vizbrix/react/static';   // "use client" なし
+import { builtinBricks } from 'vizbrix/bricks';
+
+export default async function Page() {
+  return <DashboardStatic id="sales" value={await loadLayout()} bricks={builtinBricks} data={await loadData()} />;
 }
 ```
 
-`defineLayout` はフラットなピクセル指定（基準設計幅における `x, y, w, h`）を受け取り、正規化された
-ドキュメントに変換します。アンカーは基準幅で再エンコードされ、分数インデックスの `z` キーが生成され、
-長さが正規化され、アイテムがソートされます。カードをドラッグすると、1ジェスチャにつき1回だけ
-`onLayoutChange(doc, tx)` が発火し、新しいドキュメントとそれを生んだトランザクションが渡されます。
+`<DashboardStatic>` はフックもイベントハンドラも持たない Server Component で、`<Dashboard>` と同一の
+マークアップを出力します。レイアウトは CSS なので、クライアントで実行されるのはチャート自身の
+コードだけです。
 
-読み取り専用は prop ではなく別のエントリポイントです。
+## テーマ
 
-```tsx
-import { VizbrixView } from 'vizbrix/react/view';   // センサーも履歴もなし
-<VizbrixView layout={doc}>{(item) => <Widget id={item.id} />}</VizbrixView>
+すべての色・角丸・書体は CSS カスタムプロパティです。
+
+```css
+:root {
+  --vbx-accent: #0f766e;
+  --vbx-radius: 8px;
+  --vbx-series-1: #0f766e;   /* 系列色は順序ごと差し替えてください */
+}
 ```
 
-```tsx
-import { VizbrixStatic } from 'vizbrix/react/static'; // RSC 対応、"use client" なし
-<VizbrixStatic layout={doc}>{(item) => <Widget id={item.id} />}</VizbrixStatic>
-```
+`theme="dark"`（または祖先要素の `data-vbx-theme="dark"`）でダーク、`"auto"` で OS 設定に従います。
 
-**[入門ガイド →](./docs/getting-started.md)**
+## アクセシビリティ
 
----
-
-## 主な特徴
-
-- **保存形式そのものが自由配置。** 位置は列インデックスではなく、コンテナ幅に対するアフィン式
-  （`a·W + b`）です。兄弟要素の辺・中心、等間隔ギャップ、コンテナの辺——そしてグリッド
-  （`snap={{ grid: 8 }}`、デフォルトはオフ）にスナップできます。ジェスチャ中に **Cmd/Ctrl** を押せば
-  スナップを一時的に解除でき、修飾キーは `snap={{ bypassKey: 'alt' }}` で変更できます。スナップは
-  あくまで操作なので、切り替えても保存内容は変わりません。
-
-- **リフローする制約アンカー。** 各軸が `start | end | both | center | scale` のいずれかを持ちます。
-  端に固定する、両端に張る、中央を保つ、比例して伸縮する。解決処理は純粋・全域的で計測不要なので、
-  同じレイアウトが 1440px でも 380px でも——2つ目のレイアウトを書くことなく——正しく成立します。
-  [レスポンシブガイド →](./docs/responsive.md)
-
-- **設計としての SSR 正当性。** すべての配置は静的な CSS（`left: calc(50% + 12px)`、`inset`、
-  `@container (max-width: …)`）にコンパイルされます。したがって初回描画は **JavaScript ゼロ**、
-  幅の計測なしで正しくなります。`vizbrix/react/static` は本物の React Server Component 用エントリ
-  です——`"use client"` バナーなし、フック・エフェクト・イベントハンドラなし。
-  [SSR ガイド →](./docs/ssr.md)
-
-- **1つをドラッグしても他は再レンダリングされない。** レイアウトはアイテムごとのチャネルを持つ外部
-  ストアに置かれ、ドラッグ中の1フレームが触れるのはドラッグ中ノードの `transform` とオーバーレイの
-  ガイド線だけ、どちらも命令的な書き込みです。ドラッグ中の兄弟の再レンダリングはゼロ、コミット時に
-  ちょうど1回のアイテムレンダリング、StrictMode 下でも同様です。詰め直し処理そのものが存在しないので、
-  O(n²) 系のレイアウトバグはここには存在しません。
-
-- **「あとで対応」ではないアクセシビリティ。** キーボードだけで配置できます（掴む／微調整／リサイズ／
-  スナップジャンプ／取り消し／重ね順）。`role="button"` と `aria-roledescription`、画面外の操作説明、2つの
-  ライブリージョン（ジェスチャの遷移は assertive、位置ステータスは polite）を備え、**タップ配置**に
-  よって **WCAG 2.2 達成基準 2.5.7（ドラッグ動作、AA）**——すべてのドラッグにシングルポインタの非
-  ドラッグ代替手段——を満たします。英語は組み込み、日本語は `vizbrix/locales/ja` として同梱。文字列は
-  *関数*なので、翻訳者は固定テンプレートを埋めるのではなく節の順序ごと組み替えられます。
-  [アクセシビリティガイド →](./docs/accessibility.md)
-
-- **製品を賭けられる永続化契約。** `{ version, compat, container, items }` と、**決して例外を投げない**
-  `load()`。戻り値は `ok | migrated | forward-degraded | incompatible | invalid` の5つのアームを
-  持つ `LoadOutcome` です。新しいバージョンが書き込んだ未知のキーは `$unknown` に退避され、そのまま
-  再出力されます。`serialize()` はキー順が安定しているのでレイアウトの差分がレビュー可能で、
-  マイグレーション実行器は削除されたフィールドをすべてパス付きで報告します。
-  [永続化ガイド →](./docs/persistence.md)
-
-- **v0.1 から undo / redo。** 逆操作トランザクション、1ジェスチャ＝1エントリ、人が読めるラベル
-  （「元に戻す: 移動 revenue (md)」）、invert 前の rebase、view モードではブロック、キャンセルされた
-  ドラッグや結果の変わらないドラッグはエントリを残しません。ops は CRDT に適した形（分数 z キー、
-  アクター単位のトランザクション）なので、マルチプレイヤーは書き直しではなく統合ガイドとして提供
-  できます。
-
-- **カラムグリッドレイアウトからの取り込み経路。** `importFromGrid(layouts, { cols, rowHeight })` は
-  よくあるセルベースのダッシュボード形式を——単一レイアウトでも `{ lg, md, sm, … }` のレスポンシブ
-  一式でも——変換し、各アイテムのアンカーをグリッドとの関係から推論します。互換シムではなく、
-  意図的に一方向のコンバータです。
-  [取り込みガイド →](./docs/import-from-grid.md)
-
-- **ランタイム依存ゼロ。MIT。TypeScript で書かれ、型定義を同梱。**
-
----
-
-## アンカーを20行で
-
-アンカーは「コンテナ幅が変わったとき、この座標は何を意味するのか」に答えます。
-
-```tsx
-const layout = defineLayout({
-  container: { base: { width: 1200 }, sizes: { md: { maxWidth: 900 } } },
-  items: [
-    // 左端に固定、幅は固定（デフォルト）
-    { id: 'nav', x: 0, y: 0, w: 240, h: 600 },
-    // 右端に固定 — どの幅でも右から 24px
-    { id: 'alerts', x: 936, y: 0, w: 240, h: 300, anchor: { x: 'end' } },
-    // 両端に張る — 幅は導出される
-    { id: 'timeline', x: 264, y: 320, w: 912, h: 280, anchor: { x: 'both' } },
-    // 比例 — 幅に対する取り分を保つ
-    { id: 'kpi', x: 264, y: 0, w: 648, h: 300, anchor: { x: 'scale' } },
-    // コンテナ幅 900px 以下でのみ効く手書きのオーバーライド
-    {
-      id: 'alerts-md', x: 0, y: 620, w: 240, h: 300,
-      at: { md: { x: { mode: 'both', start: 16, end: 16 } } },
-    },
-  ],
-});
-```
-
-3つの層が、この順に働きます。**アンカー**はあらゆる幅で連続的にリフローします。**名前付きサイズ**
-（`sizes` と アイテムごとの `at`）は「意図」を変えたい箇所だけをデスクトップファーストでカスケード
-します。ここでビューポートのメディアクエリではなくコンテナクエリを使うのは、ダッシュボードがサイド
-バーや分割ペインに埋め込まれるからです。そして `stackBelow`（デフォルト 480px）を下回ると、読み順に
-基づく決定的な1カラムスタックに畳まれます。`responsive: 'scale'` は、キオスクや大型ディスプレイの
-ように一律拡大縮小が本当に正しい場面のための逃げ道です。
-
-`start` 以外の垂直アンカーには、高さが確定したコンテナが必要です
-（`container: { base: { width, height }, height: 'fill' }`）。それがない場合は開発時警告つきで
-`start` に降格します。スクロールするコンテナには、アンカーすべき下端が存在しないからです。
-[詳細 →](./docs/responsive.md)
-
-## モードと制御
-
-`mode` のデフォルトは `'view'` で、view モードでは**リスナーを一切登録しません**（無効化された
-ハンドラを付けるのではなく、付けません）。ジオメトリはモード間でバイト単位まで同一なので、
-`mode="edit"` に切り替えても1ピクセルもずれません。
-
-```tsx
-// 非制御: ドキュメントは vizbrix が持ち、こちらはコミットを観測する
-<Vizbrix defaultLayout={doc} mode={editing ? 'edit' : 'view'} onLayoutChange={save}>…</Vizbrix>
-
-// 制御: ドキュメントはこちらが持つ
-<Vizbrix layout={doc} mode="edit" onLayoutChange={(next) => setDoc(next)}>…</Vizbrix>
-```
-
-制御モードでは、コミットはまずストアに入り、その後に親へ通知されます。親の処理が遅くてもドラッグが
-カクつくことはありません。次に渡された prop はそのまま尊重されます: 受け取ったドキュメント（または
-それを*変換*したもの）を渡せば採用され — undo 履歴は保持され、構造的に等価なエコーはストアに触れま
-せん — *ひとつ前*のドキュメントのコピーを渡せばコミットは拒否されロールバックします。`await` の後や
-トランジション内での非同期な採用も問題ありません: prop が変わるまで、ストアはコミット済みのドキュメ
-ントを保持します。
-
----
-
-## vizbrix の立ち位置
-
-| | **vizbrix** | カラムグリッドエンジン | フリーフォームな変形レイヤー |
-|---|---|---|---|
-| 保存モデル | 軸ごとのアフィン式（`a·W + b`） | 整数のグリッドセル（`x,y,w,h`） | なし（アプリ側の責務） |
-| 自由配置 | ネイティブなモデル | 本来の挙動を無効化するフラグ | ネイティブ |
-| スナップ | 操作層: 兄弟の辺・中心、等間隔、コンテナ端、任意でグリッド | グリッドそのもの | 自前実装 |
-| レスポンシブ戦略 | アイテム単位のアンカー＋コンテナクエリのカスケード＋決定的スタック | ブレークポイント／カラム数ごとにレイアウトを手書き | なし |
-| SSR / 初回描画 | 静的 CSS、JS ゼロで正しい。RSC 用エントリあり | ブレークポイントを選ぶ前に幅の計測が必要 | 該当なし |
-| アクセシビリティ | キーボード配置、ライブリージョン、WCAG 2.2 SC 2.5.7 タップ配置、en + ja | 通常は公開 API の一部ではない | 通常は公開 API の一部ではない |
-| undo / redo | 標準搭載、逆操作、1ジェスチャ＝1エントリ | アプリ側の責務 | アプリ側の責務 |
-| 永続化のバージョニング | `{version, compat}`、マイグレーション連鎖、`$unknown` 退避、`load()` は例外を投げない | 多くはバージョンなしの配列 | 該当なし |
-
-カラムグリッドも変形レイヤーも、それぞれ別の問いに対する良い答えです。詰め直しのある12カラム
-ダッシュボードが欲しいなら、カラムグリッドエンジンを使ってください。vizbrix を選ぶのは、グリッドの
-ほうが邪魔になってきたときです。
-
-## バンドルサイズ
-
-実際のエントリポイントごとに計測した値です（バンドル＋minify＋gzip、React は external）。prop で
-動的 import を切り替えるような仕掛けはありません——import したものがそのまま出荷されます。これらの
-数値は CI が毎回レポートします。
-
-| エントリ | gzip | 中身 |
-|---|---|---|
-| `vizbrix/react/static` | **約 4 KB** | RSC 対応レンダラ。クライアント JS なし |
-| `vizbrix/schema` | **約 9 KB** | 型 + validate/load/migrate/serialize。サーバー向け |
-| `vizbrix/react/view` | **約 18 KB** | 読み取り専用。センサーも履歴もなし |
-| `vizbrix/react` | **約 33 KB** | フルエディタ: スナップ、undo/redo、a11y、レスポンシブ |
-| `vizbrix` | **約 32 KB** | フレームワーク非依存のコア全体 |
-
-エディタ用エントリには、スナップエンジン、undo/redo、アクセシビリティ層、レスポンシブカスケード、
-バージョン付き永続化が含まれます。そして実際に最も多くデプロイされる形——保存済みダッシュボードを
-顧客向けアプリで読み取り専用に表示する——でかかるコストは、ビュー用エントリ、あるいはページに
-クライアント JavaScript を一切置かない静的エントリです。
-
-## TypeScript
-
-TypeScript で記述され、全エントリに `.d.ts` を同梱、ESM + CJS、`sideEffects: false`。ウィジェットの
-データはレイアウト定義からレンダーコールバックまで、型注釈なしで流れます。
-
-```tsx
-type Widget = { kind: 'chart' | 'table'; title: string };
-
-const layout = defineLayout<Widget>({
-  container: { base: { width: 1200 } },
-  items: [{ id: 'a', x: 0, y: 0, w: 400, h: 240, data: { kind: 'chart', title: 'Revenue' } }],
-});
-
-<Vizbrix defaultLayout={layout} mode="edit">
-  {(item) => <Card title={item.data.title} />}   {/* item.data は Widget。undefined を含まない */}
-</Vizbrix>
-```
-
-`data` は「`undefined` になり得ない `TData` を指定したときにちょうど必須になり」、指定しなければ
-省略可能です。データを持たないダッシュボードにジェネリクスは要らず、型付きのダッシュボードに
-null チェックは要りません。
-
-## プレイグラウンド
-
-対話的なプレイグラウンドが `examples/playground` にあります。
-
-```sh
-cd examples/playground
-pnpm install
-pnpm dev
-```
+- 編集はキーボードだけで完結し、移動・サイズ変更・追加・削除はライブリージョンで読み上げられます。
+- ドラッグを要する操作には、メニューの数値入力という単一ポインタ・非ドラッグの代替手段があります
+  （WCAG 2.2 達成基準 2.5.7）。
+- 折れ線・棒グラフは矢印キーで値を読め、表表示に切り替えられます。状態色は必ずラベルと併用されます。
+- `prefers-reduced-motion` を尊重します。
 
 ## やらないこと
 
-計画を立てられるよう、明文化しておきます。vizbrix v0.1 は次のものを**提供しません**。
+- **詰め直し・押し出し。** ブリックは置いた場所に留まり、重なりも許されます。整列はスナップが助けます。
+- **ブリック設定の汎用エディタ。** 設定 UI はアプリごとに違うため、`onEditItem` で委ねます。
+- **データ取得。** `data` に渡すところまでがアプリの責務です。
+- **二軸グラフ・無限キャンバス・共同編集。**
 
-1. **チャートやデータ可視化コンポーネント。** ウィジェットの*中身*はあなたのものです——すでに使って
-   いるチャートスタックを持ち込んでください。チャートを同梱した瞬間、これは「レイアウト機能付きの
-   チャートキット」になってしまいます。
-2. **無限キャンバス / ズーム・パンのカメラ。** ダッシュボードは有界なコンテナの中にあります。座標系は
-   将来カメラを載せられる形を保ちますが、カメラ自体は出しません。
-3. **リアルタイム共同編集や同期サーバー。** ops と z キーは CRDT に適した形にしてありますが、
-   マルチプレイヤーはお好みの CRDT ライブラリ向けの統合ガイドであり、こちらがホストする機能では
-   ありません。
-4. **React 以外のアダプタ。** コアはフレームワーク非依存で、今後もそれを保ちますが、現時点で出荷して
-   いるのは React アダプタだけです。
-5. **ドッキング、タブ、入れ子の分割ワークスペース。** IDE 的なタイリングは別の製品です。
-6. **ページビルダー／コンポーネントツリーの編集。** これも別の製品です。
-7. **テーマ／スタイリングシステム。** ヘッドレス＋最小限の構造 CSS のみ。`data-vzb-item`、
-   `data-selected`、`data-dragging`、`data-locked` を自前の CSS で装飾してください。
-8. **カラムグリッドのドロップイン互換シム。** `importFromGrid` は一方向のコンバータです。シムを
-   作れば、セルモデルがコアに逆流します。
-9. **制約ソルバ、エディタの UI シェル／ツールバー、ウィジェット仮想化、そして `push` 衝突。**
-   `push` は名前を変えた詰め直しであり、このライブラリが避けるために存在している O(n²) 系そのもの
-   です。スキーマは線形制約系の厳密な部分集合になるよう設計してあるので、ソルバは後から永続化
-   フォーマットを変えずに追加の逃げ道として載せられます。
+## 開発
 
-## ロードマップ
+```sh
+pnpm install
+pnpm check          # 型チェック + lint + テスト
+pnpm build && pnpm size && pnpm smoke
 
-- 同じコア上の Vue / Svelte アダプタ（コアに React 依存はないので、純粋な追加になります）。
-- 既存のアクター単位 op ログを土台にした CRDT マルチプレイヤー統合ガイド。
-- スキーマがすでに空けてある継ぎ目に、`constraints:` という逃げ道としてのオプショナルな線形制約ソルバ。
-- CI でのブラウザ駆動 CSS 差分テスト（ユニットレベルの差分テストは現時点で出荷済み）。
+cd examples/playground && pnpm install && pnpm dev
+```
 
-## 安定性
-
-v0.1 時点での約束は2つです。
-
-- **セマンティックバージョニング。** 公開 API の破壊的変更はメジャーを上げます。
-- **バージョン付きスキーマ。** 永続化されるドキュメントは、誰かがレイアウトを保存するより前の初日から
-  `version` とリーダー下限 `compat` を持ちます。`load()` は例外を投げず、未知の将来フィールドは往復
-  しても失われず、スキーマ変更には必ず削除フィールドをパス付きで報告するマイグレーションが伴います。
-  保存済みダッシュボードが、こちらのリファクタリングの人質になることはありません。
-
-## ドキュメント
-
-ガイドは現在すべて英語です。
-
-| ガイド | |
-|---|---|
-| [Getting started](./docs/getting-started.md) | インストール、最初のダッシュボード、編集/表示、保存と読み込み |
-| [Responsive layout](./docs/responsive.md) | アンカー、`at` カスケード、スタック、scale モード |
-| [Persistence](./docs/persistence.md) | `LoadOutcome`、`$unknown`、マイグレーション、シリアライズ |
-| [Accessibility](./docs/accessibility.md) | キーボード操作表、タップ配置、ライブリージョン、i18n |
-| [SSR & RSC](./docs/ssr.md) | 静的レンダリング、ハイドレーション、`position: fixed` の注意点 |
-| [Importing a column-grid layout](./docs/import-from-grid.md)（カラムグリッドレイアウトの取り込み） | `importFromGrid`、アンカー推論、引き継がれないもの |
-| [Architecture](./docs/ARCHITECTURE.md) | モジュールマップとコアの契約 |
+設計の詳細は [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) にあります。
 
 ## ライセンス
 
