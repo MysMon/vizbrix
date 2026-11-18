@@ -169,4 +169,147 @@ export function reorderItem(doc: Doc, id: string, to: 'front' | 'back'): Doc {
   return { ...doc, items };
 }
 
+export type AlignMode = 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom' | 'distributeX' | 'distributeY';
+
+/** Align bricks to their common bounding box, or space them evenly along an axis. */
+export function alignRects(rects: Readonly<Record<string, Rect>>, mode: AlignMode): Record<string, Rect> {
+  const ids = Object.keys(rects);
+  const out: Record<string, Rect> = {};
+  if (ids.length < 2) return { ...rects };
+  const list = ids.map((id) => rects[id]!);
+  const left = Math.min(...list.map((r) => r.x));
+  const right = Math.max(...list.map((r) => r.x + r.w));
+  const top = Math.min(...list.map((r) => r.y));
+  const bottom = Math.max(...list.map((r) => r.y + r.h));
+
+  if (mode === 'distributeX' || mode === 'distributeY') {
+    const horizontal = mode === 'distributeX';
+    const pos = (r: Rect): number => (horizontal ? r.x : r.y);
+    const len = (r: Rect): number => (horizontal ? r.w : r.h);
+    const sorted = [...ids].sort((a, b) => pos(rects[a]!) - pos(rects[b]!));
+    const span = (horizontal ? right - left : bottom - top) - list.reduce((sum, r) => sum + len(r), 0);
+    const gap = span / (sorted.length - 1);
+    let cursor = horizontal ? left : top;
+    for (const id of sorted) {
+      const r = rects[id]!;
+      out[id] = horizontal ? { ...r, x: Math.round(cursor) } : { ...r, y: Math.round(cursor) };
+      cursor += len(r) + gap;
+    }
+    return out;
+  }
+
+  for (const id of ids) {
+    const r = rects[id]!;
+    switch (mode) {
+      case 'left':
+        out[id] = { ...r, x: left };
+        break;
+      case 'right':
+        out[id] = { ...r, x: right - r.w };
+        break;
+      case 'centerX':
+        out[id] = { ...r, x: Math.round((left + right) / 2 - r.w / 2) };
+        break;
+      case 'top':
+        out[id] = { ...r, y: top };
+        break;
+      case 'bottom':
+        out[id] = { ...r, y: bottom - r.h };
+        break;
+      default:
+        out[id] = { ...r, y: Math.round((top + bottom) / 2 - r.h / 2) };
+    }
+  }
+  return out;
+}
+
+/**
+ * The position closest to `rect` where it overlaps none of `others`.
+ * Candidates are the rect's own position and every spot flush against an
+ * edge of another brick, so the result always sits neatly beside something.
+ */
+export function nearestFreeRect(rect: Rect, others: readonly Rect[], width: number): Rect {
+  if (!others.some((o) => intersects(rect, o))) return rect;
+  const clampX = (x: number): number => Math.min(Math.max(0, width - rect.w), Math.max(0, x));
+  const xs = new Set<number>([clampX(rect.x)]);
+  const ys = new Set<number>([Math.max(0, rect.y)]);
+  let bottom = 0;
+  for (const o of others) {
+    xs.add(clampX(o.x + o.w));
+    xs.add(clampX(o.x - rect.w));
+    ys.add(o.y + o.h);
+    if (o.y - rect.h >= 0) ys.add(o.y - rect.h);
+    bottom = Math.max(bottom, o.y + o.h);
+  }
+  let best: Rect = { ...rect, x: clampX(rect.x), y: bottom };
+  let bestDist = Infinity;
+  for (const y of ys) {
+    for (const x of xs) {
+      const dist = (x - rect.x) ** 2 + (y - rect.y) ** 2;
+      if (dist >= bestDist) continue;
+      const candidate = { x, y, w: rect.w, h: rect.h };
+      if (!others.some((o) => intersects(candidate, o))) {
+        best = candidate;
+        bestDist = dist;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Apply the "no overlap" policy to a set of new rects. Moved bricks shift,
+ * as a group, to the nearest free position; a resize that would cover a
+ * neighbour is refused (returns null).
+ */
+export function resolveOverlap(
+  doc: Doc,
+  variantName: string,
+  updates: Readonly<Record<string, Rect>>,
+  reason: 'move' | 'resize',
+): Record<string, Rect> | null {
+  const variant = resolveVariant(doc, variantName);
+  const byId = new Map(doc.items.map((item) => [item.id, item]));
+  const moved: Record<string, Rect> = {};
+  for (const id of Object.keys(updates)) {
+    const item = byId.get(id);
+    if (item && variant.rects.has(id)) moved[id] = constrainRect(updates[id]!, item, variant.width);
+  }
+  const ids = Object.keys(moved);
+  if (!ids.length) return moved;
+  const others: Rect[] = [];
+  for (const [id, rect] of variant.rects) if (!(id in moved)) others.push(rect);
+  const clash = ids.some((id) => others.some((o) => intersects(moved[id]!, o)));
+  if (!clash) return moved;
+  if (reason === 'resize') return null;
+
+  const x = Math.min(...ids.map((id) => moved[id]!.x));
+  const y = Math.min(...ids.map((id) => moved[id]!.y));
+  const box = {
+    x,
+    y,
+    w: Math.max(...ids.map((id) => moved[id]!.x + moved[id]!.w)) - x,
+    h: Math.max(...ids.map((id) => moved[id]!.y + moved[id]!.h)) - y,
+  };
+  // A group is placed by its bounding box: simple, and it keeps the group's shape.
+  const free = nearestFreeRect(box, others, variant.width);
+  const out: Record<string, Rect> = {};
+  for (const id of ids) out[id] = { ...moved[id]!, x: moved[id]!.x + free.x - x, y: moved[id]!.y + free.y - y };
+  return out;
+}
+
+/** Add copies of bricks (new ids, first free spots). Used by paste. */
+export function pasteItems(doc: Doc, items: readonly Item[]): { doc: Doc; ids: string[] } {
+  let next = doc;
+  const ids: string[] = [];
+  for (const source of items) {
+    const copy: NewItem = { ...source, id: undefined, x: undefined, y: undefined };
+    delete copy.locked;
+    const result = addItem(next, copy);
+    next = result.doc;
+    ids.push(result.id);
+  }
+  return { doc: next, ids };
+}
+
 export { BASE };

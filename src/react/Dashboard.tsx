@@ -18,7 +18,7 @@ import { en, type Messages } from '../core/messages';
 import { DEFAULT_SNAP, type SnapOptions } from '../core/snap';
 import { createDashboardStore, type ChangeMeta, type DashboardStore } from '../core/store';
 import type { DashboardDoc, DashboardItem } from '../core/types';
-import type { BrickRegistry, DataMap } from './brick';
+import type { BrickRegistry, BrickSelection, DataMap, StatusMap } from './brick';
 import {
   DashboardContext,
   itemById,
@@ -26,6 +26,8 @@ import {
   useDashboardState,
   type DashboardContextValue,
 } from './context';
+import { brickRows, downloadBlob, elementToPng, safeFilename, toCsv } from './export';
+import { Inspector } from './Inspector';
 import { Item } from './Item';
 import { brickName } from './Shell';
 import { Toolbar } from './Toolbar';
@@ -53,9 +55,29 @@ export interface DashboardProps {
   toolbar?: boolean;
   /** Content for the left side of the toolbar: a title, filters, a date range. */
   header?: ReactNode;
-  /** Adds an "Edit…" entry to each brick's menu; open your own settings UI here. */
+  /**
+   * Loading state per dataset name. `'loading'` shows a placeholder until the
+   * data arrives (and dims the previous render while refetching); `'error'`
+   * shows a message with a retry button when `onRetry` is set.
+   */
+  status?: StatusMap;
+  onRetry?: (dataset: string) => void;
+  /** The user picked a mark or row inside a brick (view mode) — drill down, cross-filter. */
+  onSelect?: (event: BrickSelection & { item: DashboardItem }) => void;
+  /** Show per-brick actions (download CSV / image) on hover in view mode. */
+  exportable?: boolean;
+  /**
+   * Replaces the built-in settings panel: called from each brick's
+   * "Settings…" menu entry so the app can open its own UI.
+   */
   onEditItem?: (item: DashboardItem) => void;
   snap?: Partial<SnapOptions> | false;
+  /**
+   * `'allow'` (default): bricks may overlap — free placement. `'avoid'`: a
+   * dropped brick lands in the nearest free spot, and a resize that would
+   * cover a neighbour is refused.
+   */
+  overlap?: 'allow' | 'avoid';
   /** Translations; English by default. See `vizbrix/locales/ja`. */
   locale?: Messages;
   /** Force a colour scheme. Omit to inherit from the page. */
@@ -79,10 +101,19 @@ export interface DashboardHandle {
   setEditing(editing: boolean): void;
   /** Scroll a brick into view and focus it. */
   reveal(id: string): void;
+  /** Open the built-in settings panel for a brick (edit mode), or close it with null. */
+  inspect(id: string | null): void;
+  /** The brick's data as CSV text (empty when it has none). */
+  toCsv(id: string): string;
+  /** Download a brick's data as a CSV file. */
+  exportCsv(id: string): void;
+  /** Download a brick as a PNG image. */
+  exportPng(id: string): Promise<void>;
 }
 
 const EMPTY_BRICKS: BrickRegistry = {};
 const EMPTY_DATA: DataMap = {};
+const EMPTY_STATUS: StatusMap = {};
 const EMPTY_DOC: DashboardDoc = {
   version: 1,
   width: 1200,
@@ -107,8 +138,13 @@ export const Dashboard = forwardRef<DashboardHandle, DashboardProps>(function Da
     onEditingChange,
     toolbar = editable,
     header,
+    status = EMPTY_STATUS,
+    onRetry,
+    onSelect,
+    exportable = false,
     onEditItem,
     snap,
+    overlap = 'allow',
     locale = en,
     theme,
     historyLimit,
@@ -126,11 +162,12 @@ export const Dashboard = forwardRef<DashboardHandle, DashboardProps>(function Da
 
   // Latest-value refs: the store and the interaction controller outlive
   // renders, so they read props through these instead of capturing them.
-  const latest = useRef({ onChange, onEditingChange, editingProp, snap, locale, bricks });
-  latest.current = { onChange, onEditingChange, editingProp, snap, locale, bricks };
+  const latest = useRef({ onChange, onEditingChange, editingProp, snap, locale, bricks, overlap });
+  latest.current = { onChange, onEditingChange, editingProp, snap, locale, bricks, overlap };
 
   useEffect(() => {
     store.setOnChange((doc, meta) => latest.current.onChange?.(doc as DashboardDoc, meta));
+    store.setAvoidOverlap(() => latest.current.overlap === 'avoid');
     return () => store.setOnChange(undefined);
   }, [store]);
 
@@ -179,9 +216,20 @@ export const Dashboard = forwardRef<DashboardHandle, DashboardProps>(function Da
     });
   }, []);
 
-  useImperativeHandle(
-    ref,
-    () => ({
+  const [inspecting, inspect] = useState<string | null>(null);
+  const dataRef = useRef(data);
+  dataRef.current = data;
+
+  useImperativeHandle(ref, () => {
+    const find = (id: string): DashboardItem | undefined => itemById(store.getState(), id);
+    const filename = (item: DashboardItem): string =>
+      safeFilename(brickName(item, latest.current.bricks, latest.current.locale));
+    const csv = (id: string): string => {
+      const item = find(id);
+      const rows = item ? brickRows(item, dataRef.current) : [];
+      return rows.length ? toCsv(rows) : '';
+    };
+    return {
       store,
       getValue: () => store.getState().doc as DashboardDoc,
       add: store.add,
@@ -191,9 +239,26 @@ export const Dashboard = forwardRef<DashboardHandle, DashboardProps>(function Da
       redo: store.redo,
       setEditing,
       reveal,
-    }),
-    [store, setEditing, reveal],
-  );
+      inspect,
+      toCsv: csv,
+      exportCsv(id) {
+        const item = find(id);
+        if (item) downloadBlob(new Blob([csv(id)], { type: 'text/csv;charset=utf-8' }), `${filename(item)}.csv`);
+      },
+      async exportPng(id) {
+        const item = find(id);
+        const canvas = canvasRef.current;
+        if (!item || !canvas) return;
+        for (const child of canvas.children) {
+          if (child instanceof HTMLElement && child.dataset.vbxItem === id) {
+            const brick = child.querySelector<HTMLElement>('.vbx-brick');
+            if (brick) downloadBlob(await elementToPng(brick), `${filename(item)}.png`);
+            return;
+          }
+        }
+      },
+    };
+  }, [store, setEditing, reveal]);
 
   // Track which variant is on screen, so edits land in the layout the user sees.
   useEffect(() => {
@@ -242,8 +307,24 @@ export const Dashboard = forwardRef<DashboardHandle, DashboardProps>(function Da
   }, [store, editable, announce]);
 
   const context = useMemo<DashboardContextValue>(
-    () => ({ store, bricks, data, messages: locale, editable, onEditItem, renderItem, announce, setEditing, reveal }),
-    [store, bricks, data, locale, editable, onEditItem, renderItem, announce, setEditing, reveal],
+    () => ({
+      store,
+      bricks,
+      data,
+      messages: locale,
+      editable,
+      onEditItem,
+      renderItem,
+      announce,
+      setEditing,
+      reveal,
+      status,
+      onRetry,
+      onSelect,
+      exportable,
+      inspect,
+    }),
+    [store, bricks, data, locale, editable, onEditItem, renderItem, announce, setEditing, reveal, status, onRetry, onSelect, exportable],
   );
 
   return (
@@ -257,6 +338,7 @@ export const Dashboard = forwardRef<DashboardHandle, DashboardProps>(function Da
       >
         {toolbar || header ? <Toolbar header={header} /> : null}
         <Surface canvasRef={canvasRef} guidesRef={guidesRef} label={props['aria-label'] ?? locale.dashboard} />
+        {inspecting ? <Inspector id={inspecting} /> : null}
         <div ref={liveRef} className="vbx-sr-only" aria-live="polite" aria-atomic="true" />
       </div>
     </DashboardContext.Provider>

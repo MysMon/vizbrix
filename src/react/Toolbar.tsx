@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import type { AlignMode } from '../core/ops';
 import { BASE } from '../core/types';
 import { newItemFor } from './brick';
 import { useDashboardContext, useDashboardState } from './context';
 import { CheckIcon, PencilIcon, PlusIcon, RedoIcon, UndoIcon } from './icons';
 
 function AddMenu(): ReactElement | null {
-  const { store, bricks, messages: m, announce, reveal } = useDashboardContext();
+  const { store, bricks, messages: m, announce, reveal, inspect, onEditItem } = useDashboardContext();
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -71,6 +72,8 @@ function AddMenu(): ReactElement | null {
                   setOpen(false);
                   announce(m.added(def.label!));
                   reveal(id);
+                  // A new brick shows sample data; open its settings so it can be pointed at real data.
+                  if (def.settings && !onEditItem) inspect(id);
                 }}
               >
                 {def.icon ? <span className="vbx-add-icon">{def.icon}</span> : null}
@@ -83,6 +86,42 @@ function AddMenu(): ReactElement | null {
           })}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+const ALIGN_ICONS: Record<AlignMode, string> = {
+  left: 'M2.5 2v12M5 4.5h8v2.5H5zM5 9h5v2.5H5z',
+  centerX: 'M8 2v12M3.5 4.5h9v2.5h-9zM5 9h6v2.5H5z',
+  right: 'M13.5 2v12M3 4.5h8v2.5H3zM6 9h5v2.5H6z',
+  top: 'M2 2.5h12M4.5 5v8H7V5zM9 5v5h2.5V5z',
+  centerY: 'M2 8h12M4.5 3.5v9H7v-9zM9 5v6h2.5V5z',
+  bottom: 'M2 13.5h12M4.5 3v8H7V3zM9 6v5h2.5V6z',
+  distributeX: 'M2 2v12M14 2v12M6.75 4.5h2.5v7h-2.5z',
+  distributeY: 'M2 2h12M2 14h12M4.5 6.75h7v2.5h-7z',
+};
+
+function AlignTools(): ReactElement | null {
+  const { store, messages: m } = useDashboardContext();
+  const count = useDashboardState((s) => s.selection.length);
+  if (count < 2) return null;
+  const modes = (Object.keys(ALIGN_ICONS) as AlignMode[]).filter((mode) => count >= 3 || !mode.startsWith('distribute'));
+  return (
+    <div className="vbx-align" role="group" aria-label={m.alignLabel}>
+      {modes.map((mode) => (
+        <button
+          key={mode}
+          type="button"
+          className="vbx-icon-button"
+          aria-label={m.align[mode]}
+          title={m.align[mode]}
+          onClick={() => store.align(mode)}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
+            <path d={ALIGN_ICONS[mode]} />
+          </svg>
+        </button>
+      ))}
     </div>
   );
 }
@@ -113,6 +152,7 @@ export function Toolbar({ header }: { header?: ReactNode }): ReactElement {
           ) : null}
           {editing ? (
             <>
+              <AlignTools />
               <button
                 type="button"
                 className="vbx-icon-button"

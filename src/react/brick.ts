@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { Messages } from '../core/messages';
 import type { DashboardItem } from '../core/types';
 
 /** Named datasets handed to the dashboard; bricks reference them by key. */
@@ -13,7 +14,46 @@ export interface BrickContext<P = Record<string, unknown>> {
   editing: boolean;
   /** BCP 47 language tag of the active locale, for number/date formatting. */
   lang: string;
+  /** The active locale's strings. */
+  messages: Messages;
+  /**
+   * Report that the user picked something inside the brick (a point, a bar,
+   * a table row). Reaches the dashboard's `onSelect`. Absent when rendering
+   * statically or while editing.
+   */
+  emit?: (selection: BrickSelection) => void;
 }
+
+/** What a brick reports when the user picks one of its marks or rows. */
+export interface BrickSelection {
+  /** The source row behind the mark. */
+  datum: Readonly<Record<string, unknown>>;
+  /** Its position in the brick's data. */
+  index: number;
+  /** The series the mark belongs to, when the brick can tell. */
+  series?: string;
+}
+
+/** Loading state of a named dataset, passed to `<Dashboard status={…}>`. */
+export type DataStatus = 'loading' | 'error' | { state: 'loading' | 'error'; message?: string };
+export type StatusMap = Readonly<Record<string, DataStatus | undefined>>;
+
+/**
+ * One control in a brick's settings panel. Each edits `props[key]`. Labels
+ * come from the locale (`messages.fields[key]`) unless `label` is given.
+ */
+export type SettingField = { key: string; label?: string } & (
+  | { type: 'text' | 'textarea' | 'number' | 'boolean' }
+  | { type: 'select'; options: readonly string[]; optional?: boolean }
+  /** Pick one of the dashboard's datasets: row arrays, or plain objects. */
+  | { type: 'dataset'; shape?: 'rows' | 'object' }
+  /** Pick a column of the dataset referenced by `props[dataset ?? 'data']`. */
+  | { type: 'field'; numeric?: boolean; optional?: boolean; dataset?: string }
+  /** Pick several columns (series). */
+  | { type: 'fields'; numeric?: boolean; dataset?: string }
+  /** Pick a number format. */
+  | { type: 'format' }
+);
 
 export interface BrickDefaults<P> {
   w?: number;
@@ -35,6 +75,11 @@ export interface BrickDefinition<P = Record<string, unknown>> {
   chrome?: 'card' | 'bare';
   /** Remove the body padding, for content that should touch the card edge (tables, maps). */
   flush?: boolean;
+  /**
+   * Controls for the built-in settings panel. With these, a brick can be
+   * configured in the editor without any app code.
+   */
+  settings?: readonly SettingField[];
   render: (ctx: BrickContext<P>) => ReactNode;
 }
 

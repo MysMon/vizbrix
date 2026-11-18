@@ -39,14 +39,17 @@ export {
 } from './geometry';
 export {
   addItem,
+  alignRects,
   constrainRect,
   duplicateItems,
   findFreeSpot,
+  nearestFreeRect,
   removeItems,
   reorderItem,
   resetVariant,
   setRects,
   updateItem,
+  type AlignMode,
   type ItemPatch,
   type NewItem,
 } from './ops';

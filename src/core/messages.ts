@@ -42,6 +42,28 @@ export interface Messages {
   retry: string;
   resizeHandle: string;
   itemInstructions: string;
+  settings: string;
+  close: string;
+  none: string;
+  inlineData: string;
+  custom: string;
+  loading: string;
+  loadError: string;
+  noData: string;
+  tableView: string;
+  resetZoom: string;
+  search: string;
+  brickActions: string;
+  exportCsv: string;
+  exportPng: string;
+  alignLabel: string;
+  align: Record<'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom' | 'distributeX' | 'distributeY', string>;
+  /** Labels for brick setting fields, keyed by prop name. */
+  fields: Readonly<Record<string, string>>;
+  /** Labels for setting option values. */
+  options: Readonly<Record<string, string>>;
+  selected: (count: number) => string;
+  pasted: (count: number) => string;
   // Live-region announcements
   moved: (name: string, x: number, y: number) => string;
   resized: (name: string, w: number, h: number) => string;
@@ -97,6 +119,69 @@ export const en: Messages = {
   resizeHandle: 'Resize',
   itemInstructions:
     'Arrow keys move, Shift plus arrow keys resize, Alt for fine steps. Delete removes, Control D duplicates.',
+  settings: 'Settings',
+  close: 'Close',
+  none: 'None',
+  inlineData: 'Inline data',
+  custom: 'Custom',
+  loading: 'Loading…',
+  loadError: 'Could not load the data.',
+  noData: 'No data',
+  tableView: 'Table view',
+  resetZoom: 'Reset zoom',
+  search: 'Search',
+  brickActions: 'Brick actions',
+  exportCsv: 'Download CSV',
+  exportPng: 'Download image',
+  alignLabel: 'Align',
+  align: {
+    left: 'Align left',
+    centerX: 'Centre horizontally',
+    right: 'Align right',
+    top: 'Align top',
+    centerY: 'Centre vertically',
+    bottom: 'Align bottom',
+    distributeX: 'Distribute horizontally',
+    distributeY: 'Distribute vertically',
+  },
+  fields: {
+    data: 'Data',
+    x: 'X axis',
+    y: 'Y axis',
+    series: 'Series',
+    lines: 'Line series',
+    stacked: 'Stacked',
+    horizontal: 'Horizontal',
+    labels: 'Value labels',
+    curve: 'Line shape',
+    zoom: 'Drag to zoom',
+    yFormat: 'Number format',
+    format: 'Number format',
+    value: 'Value',
+    label: 'Label',
+    group: 'Group by',
+    size: 'Size by',
+    limit: 'Rows to show',
+    deltaLabel: 'Comparison label',
+    upIsGood: 'Increase is good',
+    centerLabel: 'Centre caption',
+    text: 'Text',
+    variant: 'Style',
+    searchable: 'Search box',
+  },
+  options: {
+    auto: 'Automatic',
+    number: 'Number',
+    integer: 'Whole number',
+    compact: 'Compact (12.9K)',
+    percent: 'Percent',
+    linear: 'Straight',
+    smooth: 'Smooth',
+    body: 'Body text',
+    heading: 'Heading',
+  },
+  selected: (count) => `${count} selected`,
+  pasted: (count) => (count === 1 ? 'Brick pasted' : `${count} bricks pasted`),
   moved: (name, x, y) => `${name} moved to ${x}, ${y}`,
   resized: (name, w, h) => `${name} resized to ${w} by ${h}`,
   added: (name) => `${name} added`,

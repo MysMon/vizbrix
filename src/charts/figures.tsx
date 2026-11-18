@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties, type ReactElement, type ReactNode } from 'react';
-import { seriesColor, toNumber, type Datum } from './common';
+import { seriesColor, toNumber, type ChartSelection, type Datum } from './common';
 import { formatter, type Format } from './format';
 
 // ------------------------------------------------------------------ Sparkline
@@ -173,6 +173,9 @@ export interface PartsProps {
   /** Field with each part's amount. Default `value`. */
   value?: string;
   format?: Format;
+  /** Called when a part is clicked. The folded "Other" part reports nothing. */
+  onSelect?: (selection: ChartSelection) => void;
+  emptyText?: string;
   lang?: string;
   className?: string;
   style?: CSSProperties;
@@ -183,22 +186,24 @@ interface Part {
   value: number;
   color: string;
   share: number;
+  /** Index of the source row, or -1 for the folded tail. */
+  index: number;
 }
 
 function useParts(props: PartsProps, limit = 8): { parts: Part[]; total: number } {
   const { data, label = 'label', value = 'value' } = props;
   return useMemo(() => {
     let parts = data
-      .map((d) => ({ name: String(d[label] ?? ''), value: Math.max(0, toNumber(d[value]) ?? 0) }))
+      .map((d, index) => ({ name: String(d[label] ?? ''), value: Math.max(0, toNumber(d[value]) ?? 0), index }))
       .filter((p) => p.value > 0);
     // Past the palette, the tail folds into one neutral "Other" part.
     if (parts.length > limit) {
       const head = parts.slice(0, limit - 1);
       const rest = parts.slice(limit - 1).reduce((sum, p) => sum + p.value, 0);
-      parts = [...head, { name: 'Other', value: rest }];
+      parts = [...head, { name: 'Other', value: rest, index: -1 }];
     }
     const total = parts.reduce((sum, p) => sum + p.value, 0);
-    const folded = data.length > limit;
+    const folded = parts.some((p) => p.index < 0);
     return {
       total,
       parts: parts.map((p, i) => ({
@@ -210,7 +215,14 @@ function useParts(props: PartsProps, limit = 8): { parts: Part[]; total: number 
   }, [data, label, value, limit]);
 }
 
-function PartsLegend(props: { parts: Part[]; fmt: (v: number) => string; lang?: string; active: number | null; onActive: (i: number | null) => void }): ReactElement {
+function PartsLegend(props: {
+  parts: Part[];
+  fmt: (v: number) => string;
+  lang?: string;
+  active: number | null;
+  onActive: (i: number | null) => void;
+  onPick?: (part: Part) => void;
+}): ReactElement {
   const pct = formatter('percent', props.lang);
   return (
     <ul className="vbx-parts-legend">
@@ -220,6 +232,8 @@ function PartsLegend(props: { parts: Part[]; fmt: (v: number) => string; lang?: 
           data-dim={props.active !== null && props.active !== i ? '' : undefined}
           onPointerEnter={() => props.onActive(i)}
           onPointerLeave={() => props.onActive(null)}
+          onClick={props.onPick && p.index >= 0 ? () => props.onPick!(p) : undefined}
+          data-clickable={props.onPick && p.index >= 0 ? '' : undefined}
         >
           <span className="vbx-swatch" data-shape="block" style={{ background: p.color }} />
           <span className="vbx-parts-name">{p.name}</span>
@@ -231,6 +245,11 @@ function PartsLegend(props: { parts: Part[]; fmt: (v: number) => string; lang?: 
   );
 }
 
+function usePick(props: PartsProps): ((part: Part) => void) | undefined {
+  const { onSelect, data } = props;
+  return onSelect ? (part) => onSelect({ datum: data[part.index]!, index: part.index }) : undefined;
+}
+
 // --------------------------------------------------------------- SegmentedBar
 
 /** One whole split into parts: a thin bar with the names and amounts listed beneath. */
@@ -238,7 +257,8 @@ export function SegmentedBar(props: PartsProps): ReactElement {
   const { parts, total } = useParts(props);
   const [active, setActive] = useState<number | null>(null);
   const fmt = formatter(props.format, props.lang, total);
-  if (!parts.length) return <div className="vbx-chart-empty">No data</div>;
+  const pick = usePick(props);
+  if (!parts.length) return <div className="vbx-chart-empty">{props.emptyText ?? 'No data'}</div>;
   return (
     <div className={props.className ? `vbx-segmented ${props.className}` : 'vbx-segmented'} style={props.style}>
       <div className="vbx-segmented-bar" role="img" aria-label={parts.map((p) => `${p.name} ${fmt(p.value)}`).join(', ')}>
@@ -249,10 +269,12 @@ export function SegmentedBar(props: PartsProps): ReactElement {
             data-dim={active !== null && active !== i ? '' : undefined}
             onPointerEnter={() => setActive(i)}
             onPointerLeave={() => setActive(null)}
+            onClick={pick && p.index >= 0 ? () => pick(p) : undefined}
+            data-clickable={pick && p.index >= 0 ? '' : undefined}
           />
         ))}
       </div>
-      <PartsLegend parts={parts} fmt={fmt} lang={props.lang} active={active} onActive={setActive} />
+      <PartsLegend parts={parts} fmt={fmt} lang={props.lang} active={active} onActive={setActive} onPick={pick} />
     </div>
   );
 }
@@ -279,7 +301,8 @@ export function DonutChart(props: DonutChartProps): ReactElement {
   const { parts, total } = useParts(props);
   const [active, setActive] = useState<number | null>(null);
   const fmt = formatter(props.format, props.lang, total);
-  if (!parts.length) return <div className="vbx-chart-empty">No data</div>;
+  const pick = usePick(props);
+  if (!parts.length) return <div className="vbx-chart-empty">{props.emptyText ?? 'No data'}</div>;
 
   let angle = 0;
   const arcs = parts.map((p) => {
@@ -303,6 +326,8 @@ export function DonutChart(props: DonutChartProps): ReactElement {
               data-dim={active !== null && active !== i ? '' : undefined}
               onPointerEnter={() => setActive(i)}
               onPointerLeave={() => setActive(null)}
+              onClick={pick && parts[i]!.index >= 0 ? () => pick(parts[i]!) : undefined}
+              data-clickable={pick && parts[i]!.index >= 0 ? '' : undefined}
             />
           ))}
         </svg>
@@ -311,7 +336,7 @@ export function DonutChart(props: DonutChartProps): ReactElement {
           <span className="vbx-donut-caption">{focus ? focus.name : (props.centerLabel ?? '')}</span>
         </div>
       </div>
-      <PartsLegend parts={parts} fmt={fmt} lang={props.lang} active={active} onActive={setActive} />
+      <PartsLegend parts={parts} fmt={fmt} lang={props.lang} active={active} onActive={setActive} onPick={pick} />
     </div>
   );
 }
@@ -329,17 +354,21 @@ export interface BarListProps extends PartsProps {
 export function BarList(props: BarListProps): ReactElement {
   const { data, label = 'label', value = 'value', sort = true, limit, lang } = props;
   const rows = useMemo(() => {
-    let list = data.map((d) => ({ name: String(d[label] ?? ''), value: toNumber(d[value]) ?? 0 }));
+    let list = data.map((d, index) => ({ name: String(d[label] ?? ''), value: toNumber(d[value]) ?? 0, index }));
     if (sort) list = [...list].sort((a, b) => b.value - a.value);
     return limit ? list.slice(0, limit) : list;
   }, [data, label, value, sort, limit]);
   const max = Math.max(0, ...rows.map((r) => r.value));
   const fmt = formatter(props.format, lang, max);
-  if (!rows.length) return <div className="vbx-chart-empty">No data</div>;
+  if (!rows.length) return <div className="vbx-chart-empty">{props.emptyText ?? 'No data'}</div>;
   return (
     <ol className={props.className ? `vbx-barlist ${props.className}` : 'vbx-barlist'} style={props.style}>
       {rows.map((row, i) => (
-        <li key={`${row.name}-${i}`}>
+        <li
+          key={`${row.name}-${i}`}
+          data-clickable={props.onSelect ? '' : undefined}
+          onClick={props.onSelect ? () => props.onSelect!({ datum: data[row.index]!, index: row.index }) : undefined}
+        >
           <span className="vbx-barlist-name" title={row.name}>
             {row.name}
           </span>

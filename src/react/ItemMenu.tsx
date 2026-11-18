@@ -60,7 +60,8 @@ export function ItemMenu({ item, name }: { item: DashboardItem; name: string }):
 }
 
 function MenuPanel({ item, name, close }: { item: DashboardItem; name: string; close: () => void }): ReactElement {
-  const { store, messages: m, onEditItem, announce, reveal } = useDashboardContext();
+  const { store, bricks, messages: m, onEditItem, announce, reveal, inspect } = useDashboardContext();
+  const hasSettings = !!(Object.prototype.hasOwnProperty.call(bricks, item.type) && bricks[item.type]!.settings);
   const variantName = useDashboardState((s) => s.variant);
   const rect = useDashboardState((s) => resolveVariant(s.doc, s.variant).rects.get(item.id));
   const locked = !!item.locked;
@@ -136,8 +137,8 @@ function MenuPanel({ item, name, close }: { item: DashboardItem; name: string; c
       ) : null}
 
       <div className="vbx-menu-list" role="group">
-        {onEditItem ? (
-          <button type="button" className="vbx-menu-item" onClick={run(() => onEditItem(item))}>
+        {onEditItem || hasSettings ? (
+          <button type="button" className="vbx-menu-item" onClick={run(() => (onEditItem ? onEditItem(item) : inspect(item.id)))}>
             {m.editBrick}
           </button>
         ) : null}

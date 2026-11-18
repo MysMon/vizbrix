@@ -20,4 +20,4 @@ export {
 export { DataTable, type Column, type DataTableProps } from './DataTable';
 export { formatter, formatValue, type Format } from './format';
 export { lttb, niceTicks, timeTicks } from './scale';
-export type { Datum, SeriesSpec } from './common';
+export type { ChartSelection, Datum, ReferenceLine, SeriesSpec } from './common';

@@ -2,14 +2,16 @@ import type { CSSProperties, ReactElement, ReactNode } from 'react';
 import { compileCss } from '../core/geometry';
 import { en, type Messages } from '../core/messages';
 import type { DashboardDoc, DashboardItem } from '../core/types';
-import type { BrickRegistry, DataMap } from './brick';
-import { BrickShell, definitionOf, renderBrick } from './Shell';
+import type { BrickRegistry, DataMap, StatusMap } from './brick';
+import { BrickShell, datasetOf, definitionOf, renderBrick } from './Shell';
 
 export interface DashboardStaticProps {
   value: DashboardDoc;
   bricks?: BrickRegistry;
   data?: DataMap;
   renderItem?: (item: DashboardItem) => ReactNode;
+  /** Loading state per dataset name; see `<Dashboard status>`. */
+  status?: StatusMap;
   /**
    * Unique id for this dashboard on the page; scopes its stylesheet.
    * Required because a hook-free component cannot generate one.
@@ -30,7 +32,7 @@ export interface DashboardStaticProps {
  * Markup is identical to `<Dashboard>`, which makes the two interchangeable.
  */
 export function DashboardStatic(props: DashboardStaticProps): ReactElement {
-  const { value: doc, bricks = {}, data = {}, renderItem, id, header, locale = en, theme, className, style } = props;
+  const { value: doc, bricks = {}, data = {}, renderItem, id, header, locale = en, theme, className, style, status = {} } = props;
   return (
     <div className={className ? `vbx ${className}` : 'vbx'} style={style} data-vbx-theme={theme} lang={locale.lang}>
       {header ? (
@@ -48,7 +50,12 @@ export function DashboardStatic(props: DashboardStaticProps): ReactElement {
                 <BrickShell item={item} definition={definition} titleId={`${id}-${item.id}-title`}>
                   {!definition && renderItem
                     ? renderItem(item)
-                    : renderBrick(item, definition, { data, editing: false, messages: locale })}
+                    : renderBrick(item, definition, {
+                        data,
+                        editing: false,
+                        messages: locale,
+                        status: status[datasetOf(item) ?? ''],
+                      })}
                 </BrickShell>
               </div>
             );

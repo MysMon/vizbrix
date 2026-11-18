@@ -54,6 +54,9 @@ interface Gesture {
 }
 
 const DRAG_THRESHOLD = 3;
+
+/** Copied bricks. Module-level so a copy in one dashboard can be pasted into another on the page. */
+let clipboard: DashboardItem<unknown>[] = [];
 const EDGE_SCROLL_ZONE = 48;
 
 function isTextInput(target: EventTarget | null): boolean {
@@ -93,7 +96,7 @@ export function attachInteractions(host: InteractionHost): () => void {
     const target = event.target as Element;
     const itemEl = target.closest<HTMLElement>('[data-vbx-item]');
     if (!itemEl || itemEl.parentElement !== canvas) {
-      if (target === canvas || target === guides) store.select([]);
+      if (target === canvas || target === guides) startMarquee(event);
       return;
     }
     const id = itemEl.dataset.vbxItem!;
@@ -147,6 +150,57 @@ export function attachInteractions(host: InteractionHost): () => void {
     window.addEventListener('pointercancel', onPointerCancel);
     window.addEventListener('keydown', onGestureKey, true);
     window.addEventListener('blur', cancel);
+  };
+
+  // --------------------------------------------------------------- marquee
+
+  /** Drag on empty canvas to select every brick the rectangle touches. */
+  const startMarquee = (down: PointerEvent): void => {
+    const base = down.shiftKey || down.metaKey || down.ctrlKey ? [...store.getState().selection] : [];
+    const start = { x: down.clientX, y: down.clientY };
+    let box: HTMLDivElement | null = null;
+
+    const onMove = (event: PointerEvent): void => {
+      if (!box) {
+        if (Math.hypot(event.clientX - start.x, event.clientY - start.y) < DRAG_THRESHOLD) return;
+        box = document.createElement('div');
+        box.className = 'vbx-marquee';
+        guides.appendChild(box);
+        canvas.setAttribute('data-vbx-gesture', 'select');
+      }
+      const origin = canvas.getBoundingClientRect();
+      const x0 = Math.min(start.x, event.clientX);
+      const y0 = Math.min(start.y, event.clientY);
+      const x1 = Math.max(start.x, event.clientX);
+      const y1 = Math.max(start.y, event.clientY);
+      box.style.left = `${x0 - origin.left}px`;
+      box.style.top = `${y0 - origin.top}px`;
+      box.style.width = `${x1 - x0}px`;
+      box.style.height = `${y1 - y0}px`;
+      const hit: string[] = [];
+      for (const child of canvas.children) {
+        if (!(child instanceof HTMLElement) || !child.dataset.vbxItem) continue;
+        const r = child.getBoundingClientRect();
+        if (r.left < x1 && r.right > x0 && r.top < y1 && r.bottom > y0) hit.push(child.dataset.vbxItem);
+      }
+      store.select([...base, ...hit]);
+    };
+    const finish = (): void => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      if (box) {
+        box.remove();
+        canvas.removeAttribute('data-vbx-gesture');
+        const count = store.getState().selection.length;
+        if (count) host.announce(host.messages().selected(count));
+      } else if (!base.length) {
+        store.select([]);
+      }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
   };
 
   const activate = (g: Gesture): void => {
@@ -504,6 +558,31 @@ export function attachInteractions(host: InteractionHost): () => void {
     if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
     const key = event.key.toLowerCase();
     const m = host.messages();
+    const inCanvas = event.target instanceof Node && canvas.contains(event.target);
+    if (key === 'c' && inCanvas) {
+      // Leave the browser's own copy alone when the user has text selected.
+      if (window.getSelection()?.toString()) return;
+      const state = store.getState();
+      const picked = state.doc.items.filter((item) => state.selection.includes(item.id));
+      if (picked.length) clipboard = picked;
+      return;
+    }
+    if (key === 'v' && inCanvas) {
+      if (!clipboard.length) return;
+      event.preventDefault();
+      const ids = store.paste(clipboard);
+      if (ids.length) {
+        host.announce(m.pasted(ids.length));
+        requestAnimationFrame(() => itemElement(ids[ids.length - 1]!)?.focus());
+      }
+      return;
+    }
+    if (key === 'a' && inCanvas) {
+      event.preventDefault();
+      store.select(store.getState().doc.items.map((item) => item.id));
+      host.announce(m.selected(store.getState().selection.length));
+      return;
+    }
     if (key === 'z' && !event.shiftKey) {
       if (!store.getState().canUndo) return;
       event.preventDefault();

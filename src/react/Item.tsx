@@ -1,11 +1,12 @@
-import { Component, memo, useId, type ReactElement, type ReactNode } from 'react';
+import { Component, memo, useId, useMemo, type ReactElement, type ReactNode } from 'react';
 import type { Messages } from '../core/messages';
 import type { DashboardItem } from '../core/types';
-import type { BrickDefinition, DataMap } from './brick';
+import { BrickActions } from './Actions';
+import type { BrickDefinition, BrickSelection, DataMap, DataStatus } from './brick';
 import { itemById, useDashboardContext, useDashboardState } from './context';
 import { LockIcon } from './icons';
 import { ItemMenu } from './ItemMenu';
-import { BrickShell, HANDLES, brickName, definitionOf, renderBrick } from './Shell';
+import { BrickShell, HANDLES, brickName, datasetOf, definitionOf, renderBrick } from './Shell';
 
 interface BoundaryProps {
   messages: Messages;
@@ -48,6 +49,9 @@ interface BodyProps {
   data: DataMap;
   editing: boolean;
   messages: Messages;
+  status: DataStatus | undefined;
+  onRetry: (() => void) | undefined;
+  emit: ((selection: BrickSelection) => void) | undefined;
   custom?: (item: DashboardItem, state: { editing: boolean }) => ReactNode;
 }
 
@@ -56,19 +60,27 @@ interface BodyProps {
  * dragging or editing a *different* brick leaves these props untouched, so
  * the (potentially expensive) content does not re-render.
  */
-const BrickBody = memo(function BrickBody({ item, definition, data, editing, messages, custom }: BodyProps) {
+const BrickBody = memo(function BrickBody(props: BodyProps) {
+  const { item, definition, data, editing, messages, custom, status, onRetry, emit } = props;
   if (!definition && custom) return <>{custom(item, { editing })}</>;
-  return <>{renderBrick(item, definition, { data, editing, messages })}</>;
+  return <>{renderBrick(item, definition, { data, editing, messages, status, onRetry, emit })}</>;
 });
 
 export const Item = memo(function Item({ id }: { id: string }): ReactElement | null {
-  const { bricks, data, messages, renderItem } = useDashboardContext();
+  const { bricks, data, messages, renderItem, status, onRetry, onSelect, inspect, onEditItem, exportable } =
+    useDashboardContext();
   const item = useDashboardState((s) => itemById(s, id));
   const editing = useDashboardState((s) => s.editing);
   const selected = useDashboardState((s) => s.selection.includes(id));
   const sole = useDashboardState((s) => s.selection.length === 1);
   const titleId = useId();
   const hintId = useId();
+  const dataset = item ? datasetOf(item) : undefined;
+  const retry = useMemo(() => (onRetry && dataset ? () => onRetry(dataset) : undefined), [onRetry, dataset]);
+  const emit = useMemo(
+    () => (onSelect && item ? (selection: BrickSelection) => onSelect({ ...selection, item }) : undefined),
+    [onSelect, item],
+  );
   if (!item) return null;
 
   const definition = definitionOf(item, bricks);
@@ -95,13 +107,20 @@ export const Item = memo(function Item({ id }: { id: string }): ReactElement | n
             data={data}
             editing={editing}
             messages={messages}
+            status={dataset ? status[dataset] : undefined}
+            onRetry={retry}
+            emit={emit}
             custom={renderItem}
           />
         </BrickBoundary>
       </BrickShell>
       {editing ? (
         <>
-          <div className="vbx-grip" aria-hidden="true" />
+          <div
+            className="vbx-grip"
+            aria-hidden="true"
+            onDoubleClick={definition?.settings && !onEditItem ? () => inspect(id) : undefined}
+          />
           <span id={hintId} hidden>
             {messages.itemInstructions}
           </span>
@@ -115,6 +134,8 @@ export const Item = memo(function Item({ id }: { id: string }): ReactElement | n
             ? HANDLES.map((h) => <span key={h} className="vbx-handle" data-vbx-handle={h} aria-hidden="true" />)
             : null}
         </>
+      ) : exportable ? (
+        <BrickActions item={item} name={name} />
       ) : null}
     </div>
   );

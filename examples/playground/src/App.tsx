@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { StatusMap } from 'vizbrix/react';
 import { parseDashboard, serializeDashboard, type DashboardDoc } from 'vizbrix';
 import { builtinBricks, withLabels } from 'vizbrix/bricks';
 import { brickLabelsJa, ja } from 'vizbrix/locales/ja';
@@ -6,7 +7,7 @@ import { Dashboard, type DashboardHandle } from 'vizbrix/react';
 import { buildData } from './data';
 import { initialLayout } from './layout';
 
-const STORAGE_KEY = 'vizbrix-playground:v3';
+const STORAGE_KEY = 'vizbrix-playground:v4';
 const bricks = withLabels(builtinBricks, brickLabelsJa);
 
 function loadLayout(): DashboardDoc {
@@ -38,7 +39,22 @@ export function App() {
   const [range, setRange] = useState(1);
   const [editing, setEditing] = useState(() => new URLSearchParams(location.search).has('edit'));
   const ref = useRef<DashboardHandle>(null);
-  const data = useMemo(() => buildData(range), [range]);
+  const [loaded, setLoaded] = useState(range);
+  const [status, setStatus] = useState<StatusMap>({});
+  const [picked, setPicked] = useState('');
+  const data = useMemo(() => buildData(loaded), [loaded]);
+
+  // Simulate a refetch when the period changes: datasets go to "loading",
+  // bricks keep their previous render dimmed, then the new data arrives.
+  useEffect(() => {
+    if (range === loaded) return;
+    setStatus(Object.fromEntries(Object.keys(data).map((key) => [key, 'loading' as const])));
+    const timer = setTimeout(() => {
+      setLoaded(range);
+      setStatus({});
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [range, loaded, data]);
 
   useEffect(() => {
     document.documentElement.dataset.vbxTheme = theme;
@@ -90,6 +106,10 @@ export function App() {
           onChange={setLayout}
           bricks={bricks}
           data={data}
+          status={status}
+          exportable
+          overlap="avoid"
+          onSelect={({ item, datum }) => setPicked(`${item.title ?? item.type}: ${JSON.stringify(datum)}`)}
           locale={ja}
           editable
           editing={editing}
@@ -111,6 +131,11 @@ export function App() {
             </>
           }
         />
+        {picked ? (
+          <p className="picked" role="status">
+            選択: {picked}
+          </p>
+        ) : null}
       </main>
     </div>
   );

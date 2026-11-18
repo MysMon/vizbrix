@@ -1,5 +1,6 @@
 import * as ops from './ops';
-import { BASE, type DashboardDoc, type Rect } from './types';
+import { resolveVariant } from './geometry';
+import { BASE, type DashboardDoc, type DashboardItem, type Rect } from './types';
 
 type Doc = DashboardDoc<unknown>;
 
@@ -47,6 +48,8 @@ export interface StoreOptions {
   /** Max undo steps kept. */
   historyLimit?: number;
   onChange?: (doc: Doc, meta: ChangeMeta) => void;
+  /** When it returns true, moves land in the nearest free spot and overlapping resizes are refused. */
+  avoidOverlap?: () => boolean;
 }
 
 export interface DashboardStore {
@@ -62,6 +65,7 @@ export interface DashboardStore {
   setEditing(editing: boolean): void;
   setVariant(variant: string): void;
   setOnChange(fn: StoreOptions['onChange']): void;
+  setAvoidOverlap(fn: StoreOptions['avoidOverlap']): void;
 
   // Convenience commands. Each is a single undo step.
   add(item: ops.NewItem): string;
@@ -71,6 +75,10 @@ export interface DashboardStore {
   setRects(updates: Readonly<Record<string, Rect>>, reason?: 'move' | 'resize', coalesce?: string): void;
   reorder(id: string, to: 'front' | 'back'): void;
   resetLayout(variant?: string): void;
+  /** Add copies of the given bricks as one step; returns the new ids. */
+  paste(items: readonly DashboardItem<unknown>[]): string[];
+  /** Align or distribute the selected bricks. */
+  align(mode: ops.AlignMode): void;
 }
 
 const COALESCE_MS = 1200;
@@ -78,6 +86,7 @@ const COALESCE_MS = 1200;
 export function createDashboardStore(options: StoreOptions): DashboardStore {
   const limit = options.historyLimit ?? 100;
   let onChange = options.onChange;
+  let avoidOverlap = options.avoidOverlap;
   let past: Doc[] = [];
   let future: Doc[] = [];
   let lastCoalesce: { key: string; at: number } | null = null;
@@ -163,6 +172,9 @@ export function createDashboardStore(options: StoreOptions): DashboardStore {
     setOnChange(fn) {
       onChange = fn;
     },
+    setAvoidOverlap(fn) {
+      avoidOverlap = fn;
+    },
 
     add(item) {
       const result = ops.addItem(state.doc, item);
@@ -182,7 +194,9 @@ export function createDashboardStore(options: StoreOptions): DashboardStore {
     update(id, patch, coalesce) {
       store.commit(ops.updateItem(state.doc, id, patch), { reason: 'update', ids: [id], coalesce });
     },
-    setRects(updates, reason = 'move', coalesce) {
+    setRects(input, reason = 'move', coalesce) {
+      const updates = avoidOverlap?.() ? ops.resolveOverlap(state.doc, state.variant, input, reason) : input;
+      if (!updates) return;
       store.commit(ops.setRects(state.doc, state.variant, updates), {
         reason,
         ids: Object.keys(updates),
@@ -194,6 +208,25 @@ export function createDashboardStore(options: StoreOptions): DashboardStore {
     },
     resetLayout(variant = state.variant) {
       store.commit(ops.resetVariant(state.doc, variant), { reason: 'reset-layout', ids: [] });
+    },
+    paste(items) {
+      const result = ops.pasteItems(state.doc, items);
+      store.commit(result.doc, { reason: 'add', ids: result.ids });
+      if (result.ids.length) set({ selection: result.ids });
+      return result.ids;
+    },
+    align(mode) {
+      const variant = resolveVariant(state.doc, state.variant);
+      const rects: Record<string, Rect> = {};
+      for (const item of state.doc.items) {
+        const rect = variant.rects.get(item.id);
+        if (rect && !item.locked && state.selection.includes(item.id)) rects[item.id] = rect;
+      }
+      // Alignment is an explicit request to line bricks up; the overlap policy does not second-guess it.
+      store.commit(ops.setRects(state.doc, state.variant, ops.alignRects(rects, mode)), {
+        reason: 'move',
+        ids: Object.keys(rects),
+      });
     },
   };
   return store;

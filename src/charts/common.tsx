@@ -20,6 +20,25 @@ export interface SeriesSpec {
   color?: string;
 }
 
+/** Reported when the user picks a mark: the source row and its position in `data`. */
+export interface ChartSelection {
+  datum: Datum;
+  index: number;
+  series?: string;
+}
+
+/** A labelled threshold drawn across the value axis — a target, a limit, an SLA. */
+export interface ReferenceLine {
+  value: number;
+  label?: string;
+  /** Colour the line by state. Always pair it with a label. */
+  status?: 'good' | 'warning' | 'serious' | 'critical';
+}
+
+export function referenceColor(ref: ReferenceLine): string {
+  return ref.status ? `var(--vbx-status-${ref.status})` : 'var(--vbx-text-2)';
+}
+
 export interface ResolvedSeries {
   key: string;
   label: string;

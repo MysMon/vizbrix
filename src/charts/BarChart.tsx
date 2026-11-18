@@ -3,10 +3,13 @@ import {
   ChartFrame,
   Legend,
   Tooltip,
+  referenceColor,
   resolveSeries,
   toNumber,
   useHidden,
+  type ChartSelection,
   type Datum,
+  type ReferenceLine,
   type ResolvedSeries,
   type SeriesSpec,
   type Size,
@@ -33,6 +36,10 @@ export interface BarChartProps {
   yFormat?: Format;
   yMax?: number;
   legend?: boolean;
+  /** Labelled thresholds across the value axis (targets, limits). */
+  references?: readonly ReferenceLine[];
+  /** Called when a category is clicked (or chosen with Enter): the row behind it. */
+  onSelect?: (selection: ChartSelection) => void;
   lang?: string;
   ariaLabel?: string;
   height?: number | string;
@@ -67,6 +74,7 @@ interface Layout {
   zero: number;
   bars: Bar[];
   lines: { key: string; color: string; d: string; points: [number, number][] }[];
+  refs: { pos: number; label: string; color: string }[];
   tips: { x: number; y: number; label: string; anchor: 'start' | 'middle' | 'end' }[];
   format: (value: number) => string;
 }
@@ -95,7 +103,7 @@ function buildLayout(
   values: readonly (readonly (number | null)[])[],
   allVisible: readonly ResolvedSeries[],
   size: Size,
-  props: Pick<BarChartProps, 'stacked' | 'horizontal' | 'labels' | 'yFormat' | 'yMax' | 'lang'>,
+  props: Pick<BarChartProps, 'stacked' | 'horizontal' | 'labels' | 'yFormat' | 'yMax' | 'lang' | 'references'>,
   barCount: number,
 ): Layout {
   const visible = allVisible.filter((s) => s.index < barCount);
@@ -130,6 +138,10 @@ function buildLayout(
       max = Math.max(max, v);
       min = Math.min(min, v);
     }
+  }
+  for (const ref of props.references ?? []) {
+    max = Math.max(max, ref.value);
+    min = Math.min(min, ref.value);
   }
   if (props.yMax !== undefined) max = props.yMax;
   if (min === 0 && max === 0) max = 1;
@@ -263,6 +275,7 @@ function buildLayout(
     zero,
     bars,
     lines,
+    refs: (props.references ?? []).map((ref) => ({ pos: scale(ref.value), label: ref.label ?? format(ref.value), color: referenceColor(ref) })),
     tips,
     format,
   };
@@ -313,6 +326,28 @@ const Marks = memo(function Marks({ layout, size }: { layout: Layout; size: Size
           </text>
         ),
       )}
+      {layout.refs.map((ref, i) =>
+        horizontal ? (
+          <g key={`ref-${i}`}>
+            <line className="vbx-reference" x1={ref.pos} x2={ref.pos} y1={top} y2={top + innerH} style={{ stroke: ref.color }} />
+            <text
+              className="vbx-reference-label"
+              x={ref.pos > left + innerW * 0.6 ? ref.pos - 5 : ref.pos + 5}
+              y={top + 10}
+              textAnchor={ref.pos > left + innerW * 0.6 ? 'end' : 'start'}
+            >
+              {ref.label}
+            </text>
+          </g>
+        ) : (
+          <g key={`ref-${i}`}>
+            <line className="vbx-reference" x1={left} x2={left + innerW} y1={ref.pos} y2={ref.pos} style={{ stroke: ref.color }} />
+            <text className="vbx-reference-label" x={left + innerW} y={ref.pos - 5} textAnchor="end">
+              {ref.label}
+            </text>
+          </g>
+        ),
+      )}
       {layout.lines.map((l) => (
         <g key={l.key}>
           <path className="vbx-line" d={l.d} style={{ stroke: l.color }} />
@@ -337,8 +372,9 @@ function HoverLayer(props: {
   visible: readonly ResolvedSeries[];
   size: Size;
   label: string;
+  onPick?: (index: number) => void;
 }): ReactElement {
-  const { layout, categories, values, visible, size } = props;
+  const { layout, categories, values, visible, size, onPick } = props;
   const [index, setIndex] = useState<number | null>(null);
   const n = categories.length;
   const active = index !== null && index < n ? index : null;
@@ -359,6 +395,7 @@ function HoverLayer(props: {
     else if (event.key === 'Home') setIndex(0);
     else if (event.key === 'End') setIndex(n - 1);
     else if (event.key === 'Escape') setIndex(null);
+    else if ((event.key === 'Enter' || event.key === ' ') && active !== null && onPick) onPick(active);
     else return;
     event.preventDefault();
   };
@@ -372,6 +409,10 @@ function HoverLayer(props: {
       aria-label={props.label}
       onPointerMove={fromPointer}
       onPointerDown={fromPointer}
+      onClick={() => {
+        if (active !== null && onPick) onPick(active);
+      }}
+      data-clickable={onPick ? '' : undefined}
       onPointerLeave={() => setIndex(null)}
       onBlur={() => setIndex(null)}
       onKeyDown={onKey}
@@ -464,15 +505,23 @@ function BarPlot(props: {
   barCount: number;
 }): ReactElement {
   const { categories, values, visible, size, options, barCount } = props;
-  const { stacked, horizontal, labels, yFormat, yMax, lang } = options;
+  const { stacked, horizontal, labels, yFormat, yMax, lang, references } = options;
   const layout = useMemo(
-    () => buildLayout(categories, values, visible, size, { stacked, horizontal, labels, yFormat, yMax, lang }, barCount),
-    [categories, values, visible, size, stacked, horizontal, labels, yFormat, yMax, lang, barCount],
+    () => buildLayout(categories, values, visible, size, { stacked, horizontal, labels, yFormat, yMax, lang, references }, barCount),
+    [categories, values, visible, size, stacked, horizontal, labels, yFormat, yMax, lang, references, barCount],
   );
   return (
     <>
       <Marks layout={layout} size={size} />
-      <HoverLayer layout={layout} categories={categories} values={values} visible={visible} size={size} label={props.label} />
+      <HoverLayer
+        layout={layout}
+        categories={categories}
+        values={values}
+        visible={visible}
+        size={size}
+        label={props.label}
+        onPick={options.onSelect ? (index) => options.onSelect!({ datum: options.data[index]!, index }) : undefined}
+      />
     </>
   );
 }

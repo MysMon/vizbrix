@@ -1,13 +1,16 @@
-import { memo, useMemo, useState, type CSSProperties, type ReactElement } from 'react';
+import { memo, useMemo, useRef, useState, type CSSProperties, type ReactElement } from 'react';
 import {
   ChartFrame,
   Legend,
   Tooltip,
   nearestIndex,
+  referenceColor,
   resolveSeries,
   toNumber,
   useHidden,
+  type ChartSelection,
   type Datum,
+  type ReferenceLine,
   type ResolvedSeries,
   type SeriesSpec,
   type Size,
@@ -34,6 +37,13 @@ export interface LineChartProps {
   yMin?: number;
   yMax?: number;
   legend?: boolean;
+  /** Labelled horizontal thresholds (targets, limits). */
+  references?: readonly ReferenceLine[];
+  /** Let the user drag across the plot to zoom into a range; double-click or the reset button zooms out. */
+  zoom?: boolean;
+  resetZoomLabel?: string;
+  /** Called when a position is clicked (or chosen with Enter): the row at that x. */
+  onSelect?: (selection: ChartSelection) => void;
   /** BCP 47 tag for number and date formatting. */
   lang?: string;
   ariaLabel?: string;
@@ -52,6 +62,8 @@ interface Model {
   labels: string[];
   /** values[seriesIndex][row] */
   values: (number | null)[][];
+  /** Source row and its index in `data`, per plotted row. */
+  rows: { datum: Datum; index: number }[];
 }
 
 function buildModel(
@@ -69,15 +81,16 @@ function buildModel(
     else if (typeof sample === 'number') kind = 'number';
   }
 
-  let rows: { xv: number; datum: Datum }[];
+  let rows: { xv: number; datum: Datum; index: number }[];
   if (kind === 'category') {
-    rows = data.map((datum, i) => ({ xv: i, datum }));
+    rows = data.map((datum, i) => ({ xv: i, datum, index: i }));
   } else {
     rows = [];
-    for (const datum of data) {
+    for (let index = 0; index < data.length; index++) {
+      const datum = data[index]!;
       const raw = datum[xKey];
       const xv = kind === 'time' ? (raw instanceof Date ? raw.getTime() : new Date(raw as string | number).getTime()) : toNumber(raw);
-      if (xv !== null && Number.isFinite(xv)) rows.push({ xv, datum });
+      if (xv !== null && Number.isFinite(xv)) rows.push({ xv, datum, index });
     }
     rows.sort((a, b) => a.xv - b.xv);
   }
@@ -98,7 +111,20 @@ function buildModel(
     labels = rows.map((r) => String(r.datum[xKey] ?? ''));
   }
   const values = series.map((s) => rows.map((r) => toNumber(r.datum[s.key])));
-  return { kind, xv, labels, values };
+  return { kind, xv, labels, values, rows: rows.map((r) => ({ datum: r.datum, index: r.index })) };
+}
+
+/** The part of a model inside a zoom range. */
+function sliceModel(model: Model, range: readonly [number, number] | null): Model {
+  if (!range) return model;
+  const [a, b] = range;
+  return {
+    kind: model.kind,
+    xv: model.kind === 'category' ? model.xv.slice(a, b + 1).map((_, i) => i) : model.xv.slice(a, b + 1),
+    labels: model.labels.slice(a, b + 1),
+    values: model.values.map((v) => v.slice(a, b + 1)),
+    rows: model.rows.slice(a, b + 1),
+  };
 }
 
 interface Layout {
@@ -113,6 +139,7 @@ interface Layout {
   paths: { key: string; color: string; line: string; area: string | null }[];
   /** Pixel y of each visible series at each row (top of its band when stacked). */
   ys: (number | null)[][];
+  refs: { y: number; label: string; color: string }[];
   format: (value: number) => string;
 }
 
@@ -120,7 +147,7 @@ function buildLayout(
   model: Model,
   visible: readonly ResolvedSeries[],
   size: Size,
-  props: Pick<LineChartProps, 'area' | 'stacked' | 'curve' | 'yFormat' | 'zero' | 'yMin' | 'yMax' | 'lang'>,
+  props: Pick<LineChartProps, 'area' | 'stacked' | 'curve' | 'yFormat' | 'zero' | 'yMin' | 'yMax' | 'lang' | 'references'>,
 ): Layout {
   const n = model.xv.length;
   const stacked = !!props.stacked;
@@ -162,6 +189,10 @@ function buildLayout(
   if (props.zero ?? filled) {
     min = Math.min(0, min);
     max = Math.max(0, max);
+  }
+  for (const ref of props.references ?? []) {
+    min = Math.min(min, ref.value);
+    max = Math.max(max, ref.value);
   }
   if (props.yMin !== undefined) min = props.yMin;
   if (props.yMax !== undefined) max = props.yMax;
@@ -267,6 +298,11 @@ function buildLayout(
     zeroY: d0 <= 0 && d1 >= 0 ? yScale(0) : null,
     paths,
     ys,
+    refs: (props.references ?? []).map((ref) => ({
+      y: yScale(ref.value),
+      label: ref.label ?? format(ref.value),
+      color: referenceColor(ref),
+    })),
     format,
   };
 }
@@ -304,6 +340,14 @@ const Marks = memo(function Marks({ layout, size, stacked }: { layout: Layout; s
       {layout.paths.map((p) => (
         <path key={p.key} className="vbx-line" d={p.line} style={{ stroke: p.color }} />
       ))}
+      {layout.refs.map((ref, i) => (
+        <g key={`ref-${i}`}>
+          <line className="vbx-reference" x1={left} x2={left + innerW} y1={ref.y} y2={ref.y} style={{ stroke: ref.color }} />
+          <text className="vbx-reference-label" x={left + innerW} y={ref.y - 5} textAnchor="end">
+            {ref.label}
+          </text>
+        </g>
+      ))}
       {layout.xs.length === 1
         ? layout.paths.map((p, i) =>
             layout.ys[i]![0] !== null ? (
@@ -321,16 +365,66 @@ function HoverLayer(props: {
   visible: readonly ResolvedSeries[];
   size: Size;
   label: string;
+  onSelect?: (selection: ChartSelection) => void;
+  /** Present when zooming is enabled: receives a range of row indexes. */
+  onZoom?: (from: number, to: number) => void;
+  onResetZoom?: () => void;
 }): ReactElement {
-  const { layout, model, visible, size } = props;
+  const { layout, model, visible, size, onSelect, onZoom } = props;
   const [index, setIndex] = useState<number | null>(null);
+  const [brush, setBrush] = useState<{ from: number; to: number } | null>(null);
+  const press = useRef<{ x: number; index: number; dragging: boolean } | null>(null);
   const n = layout.xs.length;
   const active = index !== null && index < n ? index : null;
 
-  const fromPointer = (event: React.PointerEvent<HTMLDivElement>): void => {
+  const indexAt = (event: React.PointerEvent<HTMLDivElement>): number => {
     const box = event.currentTarget.getBoundingClientRect();
-    const i = nearestIndex(layout.xs, event.clientX - box.left);
-    if (i >= 0) setIndex(i);
+    return nearestIndex(layout.xs, event.clientX - box.left);
+  };
+
+  const fromPointer = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const i = indexAt(event);
+    if (i < 0) return;
+    setIndex(i);
+    const p = press.current;
+    if (p && onZoom) {
+      if (!p.dragging && Math.abs(event.clientX - p.x) > 6) p.dragging = true;
+      if (p.dragging) setBrush({ from: Math.min(p.index, i), to: Math.max(p.index, i) });
+    }
+  };
+
+  const onDown = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const i = indexAt(event);
+    if (i < 0 || event.button !== 0) return;
+    setIndex(i);
+    press.current = { x: event.clientX, index: i, dragging: false };
+    if (onZoom) {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // synthetic pointer
+      }
+    }
+  };
+
+  const onUp = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const p = press.current;
+    press.current = null;
+    if (!p) return;
+    const i = indexAt(event);
+    if (p.dragging && onZoom) {
+      setBrush(null);
+      const from = Math.min(p.index, i);
+      const to = Math.max(p.index, i);
+      if (to > from) onZoom(from, to);
+    } else if (i >= 0) {
+      select(i);
+    }
+  };
+
+  const select = (i: number): void => {
+    const row = model.rows[i];
+    if (row && onSelect) onSelect({ datum: row.datum, index: row.index });
   };
 
   const onKey = (event: React.KeyboardEvent<HTMLDivElement>): void => {
@@ -340,6 +434,7 @@ function HoverLayer(props: {
     else if (event.key === 'Home') setIndex(0);
     else if (event.key === 'End') setIndex(n - 1);
     else if (event.key === 'Escape') setIndex(null);
+    else if ((event.key === 'Enter' || event.key === ' ') && active !== null && onSelect) select(active);
     else return;
     event.preventDefault();
   };
@@ -350,13 +445,34 @@ function HoverLayer(props: {
       role="group"
       tabIndex={0}
       aria-label={props.label}
+      data-clickable={onSelect ? '' : undefined}
+      data-zoomable={onZoom ? '' : undefined}
       onPointerMove={fromPointer}
-      onPointerDown={fromPointer}
-      onPointerLeave={() => setIndex(null)}
+      onPointerDown={onDown}
+      onPointerUp={onUp}
+      onPointerCancel={() => {
+        press.current = null;
+        setBrush(null);
+      }}
+      onPointerLeave={() => {
+        if (!press.current) setIndex(null);
+      }}
+      onDoubleClick={props.onResetZoom}
       onBlur={() => setIndex(null)}
       onKeyDown={onKey}
     >
-      {active !== null ? (
+      {brush ? (
+        <div
+          className="vbx-brush"
+          style={{
+            left: layout.xs[brush.from],
+            width: layout.xs[brush.to]! - layout.xs[brush.from]!,
+            top: layout.top,
+            height: layout.innerH,
+          }}
+        />
+      ) : null}
+      {active !== null && !brush ? (
         <>
           <svg className="vbx-svg" width={size.width} height={size.height} aria-hidden="true">
             <line
@@ -404,7 +520,14 @@ export function LineChart(props: LineChartProps): ReactElement {
   const { data, x, lang, xType } = props;
   const series = useMemo(() => resolveSeries(props.series), [props.series]);
   const [hidden, toggle] = useHidden(series);
-  const model = useMemo(() => buildModel(data, x, series, xType, lang), [data, x, series, xType, lang]);
+  const full = useMemo(() => buildModel(data, x, series, xType, lang), [data, x, series, xType, lang]);
+  const [range, setRange] = useState<readonly [number, number] | null>(null);
+  // A zoom range refers to row positions; new data may be shorter.
+  const valid = range && range[1] < full.xv.length ? range : null;
+  const model = useMemo(() => sliceModel(full, valid), [full, valid]);
+  const zoom = props.zoom
+    ? (from: number, to: number): void => setRange([(valid?.[0] ?? 0) + from, (valid?.[0] ?? 0) + to])
+    : undefined;
   const visible = useMemo(() => series.filter((s) => !hidden.has(s.key)), [series, hidden]);
   const showLegend = props.legend ?? series.length > 1;
   const label =
@@ -415,7 +538,7 @@ export function LineChart(props: LineChartProps): ReactElement {
       className={props.className}
       style={props.style}
       height={props.height}
-      empty={model.xv.length === 0 || series.length === 0}
+      empty={full.xv.length === 0 || series.length === 0}
       emptyText={props.emptyText}
       tableLabel={props.tableLabel}
       legend={
@@ -427,17 +550,34 @@ export function LineChart(props: LineChartProps): ReactElement {
         const fmt = formatter(props.yFormat, lang);
         return {
           columns: [x, ...series.map((s) => s.label)],
-          rows: model.labels.map((l, i) => [
+          rows: full.labels.map((l, i) => [
             l,
             ...series.map((s) => {
-              const v = model.values[s.index]![i];
+              const v = full.values[s.index]![i];
               return v === null || v === undefined ? '–' : fmt(v);
             }),
           ]),
         };
       }}
     >
-      {(size) => <LinePlot model={model} visible={visible} size={size} label={label} options={props} />}
+      {(size) => (
+        <>
+          <LinePlot
+            model={model}
+            visible={visible}
+            size={size}
+            label={label}
+            options={props}
+            onZoom={zoom}
+            onResetZoom={valid ? () => setRange(null) : undefined}
+          />
+          {valid ? (
+            <button type="button" className="vbx-zoom-reset" onClick={() => setRange(null)}>
+              {props.resetZoomLabel ?? 'Reset zoom'}
+            </button>
+          ) : null}
+        </>
+      )}
     </ChartFrame>
   );
 }
@@ -448,17 +588,28 @@ function LinePlot(props: {
   size: Size;
   label: string;
   options: LineChartProps;
+  onZoom?: (from: number, to: number) => void;
+  onResetZoom?: () => void;
 }): ReactElement {
   const { model, visible, size, options } = props;
-  const { area, stacked, curve, yFormat, zero, yMin, yMax, lang } = options;
+  const { area, stacked, curve, yFormat, zero, yMin, yMax, lang, references } = options;
   const layout = useMemo(
-    () => buildLayout(model, visible, size, { area, stacked, curve, yFormat, zero, yMin, yMax, lang }),
-    [model, visible, size, area, stacked, curve, yFormat, zero, yMin, yMax, lang],
+    () => buildLayout(model, visible, size, { area, stacked, curve, yFormat, zero, yMin, yMax, lang, references }),
+    [model, visible, size, area, stacked, curve, yFormat, zero, yMin, yMax, lang, references],
   );
   return (
     <>
       <Marks layout={layout} size={size} stacked={!!stacked} />
-      <HoverLayer layout={layout} model={model} visible={visible} size={size} label={props.label} />
+      <HoverLayer
+        layout={layout}
+        model={model}
+        visible={visible}
+        size={size}
+        label={props.label}
+        onSelect={options.onSelect}
+        onZoom={props.onZoom}
+        onResetZoom={props.onResetZoom}
+      />
     </>
   );
 }

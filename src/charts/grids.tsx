@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties, type ReactElement } from 'react';
-import { toNumber, type Datum } from './common';
+import { toNumber, type ChartSelection, type Datum } from './common';
 import { formatter, type Format } from './format';
 
 // -------------------------------------------------------------------- Heatmap
@@ -21,6 +21,8 @@ export interface HeatmapProps {
   /** Fix the ends of the colour scale. Default: the data's own range. */
   min?: number;
   max?: number;
+  /** Called when a cell is clicked (or chosen with Enter). */
+  onSelect?: (selection: ChartSelection) => void;
   lang?: string;
   ariaLabel?: string;
   height?: number | string;
@@ -40,9 +42,11 @@ export function Heatmap(props: HeatmapProps): ReactElement {
     const cols = props.xOrder ? [...props.xOrder] : [];
     const rows = props.yOrder ? [...props.yOrder] : [];
     const cells = new Map<string, number>();
+    const source = new Map<string, number>();
     let lo = Infinity;
     let hi = -Infinity;
-    for (const d of data) {
+    for (let i = 0; i < data.length; i++) {
+      const d = data[i]!;
       const cx = String(d[x] ?? '');
       const cy = String(d[y] ?? '');
       const v = toNumber(d[value]);
@@ -50,10 +54,11 @@ export function Heatmap(props: HeatmapProps): ReactElement {
       if (!props.yOrder && !rows.includes(cy)) rows.push(cy);
       if (v === null) continue;
       cells.set(`${cy}\u0000${cx}`, v);
+      source.set(`${cy}\u0000${cx}`, i);
       lo = Math.min(lo, v);
       hi = Math.max(hi, v);
     }
-    return { cols, rows, cells, lo: props.min ?? (lo === Infinity ? 0 : lo), hi: props.max ?? (hi === -Infinity ? 1 : hi) };
+    return { cols, rows, cells, source, lo: props.min ?? (lo === Infinity ? 0 : lo), hi: props.max ?? (hi === -Infinity ? 1 : hi) };
   }, [data, x, y, value, props.xOrder, props.yOrder, props.min, props.max]);
 
   const [active, setActive] = useState<{ row: number; col: number } | null>(null);
@@ -64,7 +69,16 @@ export function Heatmap(props: HeatmapProps): ReactElement {
     return <div className="vbx-chart-empty">{props.emptyText ?? 'No data'}</div>;
   }
 
+  const pick = (row: number, col: number): void => {
+    const i = model.source.get(`${model.rows[row]}\u0000${model.cols[col]}`);
+    if (i !== undefined && props.onSelect) props.onSelect({ datum: data[i]!, index: i });
+  };
+
   const onKey = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if ((event.key === 'Enter' || event.key === ' ') && active) {
+      event.preventDefault();
+      return pick(active.row, active.col);
+    }
     const cur = active ?? { row: 0, col: -1 };
     let { row, col } = cur;
     if (event.key === 'ArrowRight') col = Math.min(model.cols.length - 1, col + 1);
@@ -110,6 +124,8 @@ export function Heatmap(props: HeatmapProps): ReactElement {
                 data-ink={t > 0.55 ? 'on-high' : 'on-low'}
                 style={v === undefined ? undefined : { ['--t' as string]: `${(t * 100).toFixed(1)}%` }}
                 onPointerEnter={() => setActive({ row: r, col: c })}
+                onClick={props.onSelect ? () => pick(r, c) : undefined}
+                data-clickable={props.onSelect && v !== undefined ? '' : undefined}
               >
                 {props.labels && v !== undefined ? fmt(v) : null}
               </span>
@@ -152,6 +168,8 @@ export interface FunnelChartProps {
   /** Field with each stage's count. Default `value`. */
   value?: string;
   format?: Format;
+  /** Called when a stage is clicked. */
+  onSelect?: (selection: ChartSelection) => void;
   lang?: string;
   ariaLabel?: string;
   emptyText?: string;
@@ -181,7 +199,11 @@ export function FunnelChart(props: FunnelChartProps): ReactElement {
       {stages.map((stage, i) => {
         const prev = i > 0 ? stages[i - 1]!.value : 0;
         return (
-          <li key={`${stage.name}-${i}`}>
+          <li
+            key={`${stage.name}-${i}`}
+            data-clickable={props.onSelect ? '' : undefined}
+            onClick={props.onSelect ? () => props.onSelect!({ datum: data[i]!, index: i }) : undefined}
+          >
             <span className="vbx-funnel-name" title={stage.name}>
               {stage.name}
             </span>

@@ -23,7 +23,14 @@ import {
   type ScatterChartProps,
   type StatTileProps,
 } from 'vizbrix/charts';
-import { defineBrick, resolveData, type BrickDefinition, type BrickRegistry } from '../react/brick';
+import {
+  defineBrick,
+  resolveData,
+  type BrickContext,
+  type BrickDefinition,
+  type BrickRegistry,
+  type SettingField,
+} from '../react/brick';
 
 /**
  * The built-in bricks. Each one is a thin, serializable configuration over a
@@ -48,6 +55,21 @@ function merged<T extends object>(props: T & { data?: string }, data: Readonly<R
   return source && typeof source === 'object' && !Array.isArray(source) ? { ...(source as T), ...props } : props;
 }
 
+/** Strings and the selection callback every chart brick forwards. */
+const common = (ctx: BrickContext<never>): { lang: string; emptyText: string; onSelect: BrickContext['emit'] } => ({
+  lang: ctx.lang,
+  emptyText: ctx.messages.noData,
+  onSelect: ctx.emit,
+});
+
+const ROWS: SettingField = { key: 'data', type: 'dataset', shape: 'rows' };
+const PARTS_SETTINGS: SettingField[] = [
+  ROWS,
+  { key: 'label', type: 'field' },
+  { key: 'value', type: 'field', numeric: true },
+  { key: 'format', type: 'format' },
+];
+
 const icon = (path: ReactElement): ReactElement => (
   <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     {path}
@@ -65,6 +87,11 @@ export const stat = defineBrick<StatBrickProps>({
   description: 'A headline number with change and trend',
   icon: icon(<path d="M3 13.5h2.5V9H3v4.5ZM7.75 13.5h2.5v-9h-2.5v9ZM12.5 13.5H15V7h-2.5v6.5Z" />),
   defaults: { w: 300, h: 144, minW: 160, minH: 96, title: 'Stat', props: { value: 0 } },
+  settings: [
+    { key: 'data', type: 'dataset', shape: 'object' },
+    { key: 'format', type: 'format' },
+    { key: 'deltaLabel', type: 'text' },
+  ],
   render: ({ props, data, lang }) => {
     const p = merged(props, data);
     return <StatTile {...p} value={p.value} lang={lang} />;
@@ -89,7 +116,24 @@ export const line = defineBrick<LineBrickProps>({
   description: 'Change over time, one or more series',
   icon: icon(<path d="M2.5 12.5 6.5 8l3 2.5 5.5-6" />),
   defaults: { w: 600, h: 320, minW: 240, minH: 180, title: 'Line chart', props: { data: SAMPLE_SERIES, x: 'month', series: ['value'] } },
-  render: ({ props, data, lang }) => <LineChart {...props} data={rowsOf(props.data, data)} lang={lang} />,
+  settings: [
+    ROWS,
+    { key: 'x', type: 'field' },
+    { key: 'series', type: 'fields', numeric: true },
+    { key: 'curve', type: 'select', options: ['linear', 'smooth'] },
+    { key: 'stacked', type: 'boolean' },
+    { key: 'zoom', type: 'boolean' },
+    { key: 'yFormat', type: 'format' },
+  ],
+  render: (ctx) => (
+    <LineChart
+      {...ctx.props}
+      {...common(ctx as never)}
+      data={rowsOf(ctx.props.data, ctx.data)}
+      tableLabel={ctx.messages.tableView}
+      resetZoomLabel={ctx.messages.resetZoom}
+    />
+  ),
 });
 
 export const area = defineBrick<LineBrickProps>({
@@ -97,7 +141,24 @@ export const area = defineBrick<LineBrickProps>({
   description: 'A line with volume, optionally stacked',
   icon: icon(<path d="M2.5 14.5v-3l4-4.5 3 2.5 6-6v11h-13Z" />),
   defaults: { w: 600, h: 320, minW: 240, minH: 180, title: 'Area chart', props: { data: SAMPLE_SERIES, x: 'month', series: ['value'] } },
-  render: ({ props, data, lang }) => <AreaChart {...props} data={rowsOf(props.data, data)} lang={lang} />,
+  settings: [
+    ROWS,
+    { key: 'x', type: 'field' },
+    { key: 'series', type: 'fields', numeric: true },
+    { key: 'curve', type: 'select', options: ['linear', 'smooth'] },
+    { key: 'stacked', type: 'boolean' },
+    { key: 'zoom', type: 'boolean' },
+    { key: 'yFormat', type: 'format' },
+  ],
+  render: (ctx) => (
+    <AreaChart
+      {...ctx.props}
+      {...common(ctx as never)}
+      data={rowsOf(ctx.props.data, ctx.data)}
+      tableLabel={ctx.messages.tableView}
+      resetZoomLabel={ctx.messages.resetZoom}
+    />
+  ),
 });
 
 export type BarBrickProps = ChartData<BarChartProps>;
@@ -107,7 +168,19 @@ export const bar = defineBrick<BarBrickProps>({
   description: 'Compare categories, grouped or stacked',
   icon: icon(<path d="M4 14.5V8M9 14.5v-11M14 14.5V6" />),
   defaults: { w: 600, h: 320, minW: 240, minH: 180, title: 'Bar chart', props: { data: SAMPLE_SERIES, x: 'month', series: ['value'] } },
-  render: ({ props, data, lang }) => <BarChart {...props} data={rowsOf(props.data, data)} lang={lang} />,
+  settings: [
+    ROWS,
+    { key: 'x', type: 'field' },
+    { key: 'series', type: 'fields', numeric: true },
+    { key: 'lines', type: 'fields', numeric: true },
+    { key: 'stacked', type: 'boolean' },
+    { key: 'horizontal', type: 'boolean' },
+    { key: 'labels', type: 'boolean' },
+    { key: 'yFormat', type: 'format' },
+  ],
+  render: (ctx) => (
+    <BarChart {...ctx.props} {...common(ctx as never)} data={rowsOf(ctx.props.data, ctx.data)} tableLabel={ctx.messages.tableView} />
+  ),
 });
 
 const SAMPLE_PARTS = [
@@ -129,7 +202,8 @@ export const donut = defineBrick<DonutBrickProps>({
     </>,
   ),
   defaults: { w: 400, h: 280, minW: 220, minH: 180, title: 'Breakdown', props: { data: SAMPLE_PARTS } },
-  render: ({ props, data, lang }) => <DonutChart {...props} data={rowsOf(props.data, data)} lang={lang} />,
+  settings: [...PARTS_SETTINGS, { key: 'centerLabel', type: 'text' }],
+  render: (ctx) => <DonutChart {...ctx.props} {...common(ctx as never)} data={rowsOf(ctx.props.data, ctx.data)} />,
 });
 
 export type SegmentedBrickProps = ChartData<DonutChartProps>;
@@ -139,7 +213,8 @@ export const segmented = defineBrick<SegmentedBrickProps>({
   description: 'One whole split into parts, compact',
   icon: icon(<path d="M2.5 9h4M8 9h4.5M14 9h1.5" strokeWidth="3" />),
   defaults: { w: 400, h: 200, minW: 220, minH: 140, title: 'Breakdown', props: { data: SAMPLE_PARTS } },
-  render: ({ props, data, lang }) => <SegmentedBar {...props} data={rowsOf(props.data, data)} lang={lang} />,
+  settings: PARTS_SETTINGS,
+  render: (ctx) => <SegmentedBar {...ctx.props} {...common(ctx as never)} data={rowsOf(ctx.props.data, ctx.data)} />,
 });
 
 export type BarListBrickProps = ChartData<BarListProps>;
@@ -149,7 +224,8 @@ export const barlist = defineBrick<BarListBrickProps>({
   description: 'Top items with amounts',
   icon: icon(<path d="M3 4.5h12M3 9h8M3 13.5h5" />),
   defaults: { w: 400, h: 280, minW: 200, minH: 140, title: 'Ranking', props: { data: SAMPLE_PARTS } },
-  render: ({ props, data, lang }) => <BarList {...props} data={rowsOf(props.data, data)} lang={lang} />,
+  settings: [...PARTS_SETTINGS, { key: 'limit', type: 'number' }],
+  render: (ctx) => <BarList {...ctx.props} {...common(ctx as never)} data={rowsOf(ctx.props.data, ctx.data)} />,
 });
 
 export type ScatterBrickProps = ChartData<ScatterChartProps>;
@@ -174,7 +250,17 @@ export const scatter = defineBrick<ScatterBrickProps>({
     </>,
   ),
   defaults: { w: 600, h: 340, minW: 260, minH: 200, title: 'Scatter plot', props: { data: SAMPLE_POINTS, x: 'spend', y: 'revenue', label: 'name' } },
-  render: ({ props, data, lang }) => <ScatterChart {...props} data={rowsOf(props.data, data)} lang={lang} />,
+  settings: [
+    ROWS,
+    { key: 'x', type: 'field', numeric: true },
+    { key: 'y', type: 'field', numeric: true },
+    { key: 'group', type: 'field', optional: true },
+    { key: 'label', type: 'field', optional: true },
+    { key: 'size', type: 'field', numeric: true, optional: true },
+  ],
+  render: (ctx) => (
+    <ScatterChart {...ctx.props} {...common(ctx as never)} data={rowsOf(ctx.props.data, ctx.data)} tableLabel={ctx.messages.tableView} />
+  ),
 });
 
 export type HeatmapBrickProps = ChartData<HeatmapProps>;
@@ -188,7 +274,15 @@ export const heatmap = defineBrick<HeatmapBrickProps>({
   description: 'Magnitude across two categories',
   icon: icon(<path d="M3 3h3.5v3.5H3zM7.5 3H11v3.5H7.5zM12 3h3v3.5h-3zM3 7.5h3.5V11H3zM7.5 7.5H11V11H7.5zM12 7.5h3V11h-3zM3 12h3.5v3H3zM7.5 12H11v3H7.5zM12 12h3v3h-3z" strokeWidth="1" />),
   defaults: { w: 600, h: 300, minW: 240, minH: 160, title: 'Heatmap', props: { data: SAMPLE_GRID, x: 'slot', y: 'day', value: 'value' } },
-  render: ({ props, data, lang }) => <Heatmap {...props} data={rowsOf(props.data, data)} lang={lang} />,
+  settings: [
+    ROWS,
+    { key: 'x', type: 'field' },
+    { key: 'y', type: 'field' },
+    { key: 'value', type: 'field', numeric: true },
+    { key: 'labels', type: 'boolean' },
+    { key: 'format', type: 'format' },
+  ],
+  render: (ctx) => <Heatmap {...ctx.props} {...common(ctx as never)} data={rowsOf(ctx.props.data, ctx.data)} />,
 });
 
 export type FunnelBrickProps = ChartData<FunnelChartProps>;
@@ -205,7 +299,8 @@ export const funnel = defineBrick<FunnelBrickProps>({
   description: 'Stages and the conversion between them',
   icon: icon(<path d="M3 4.5h12M3 9h8.5M3 13.5h4.5" strokeWidth="2.5" />),
   defaults: { w: 400, h: 280, minW: 220, minH: 160, title: 'Funnel', props: { data: SAMPLE_STAGES } },
-  render: ({ props, data, lang }) => <FunnelChart {...props} data={rowsOf(props.data, data)} lang={lang} />,
+  settings: PARTS_SETTINGS,
+  render: (ctx) => <FunnelChart {...ctx.props} {...common(ctx as never)} data={rowsOf(ctx.props.data, ctx.data)} />,
 });
 
 export type MeterBrickProps = Omit<MeterProps, 'lang' | 'className' | 'style' | 'value'> & {
@@ -218,6 +313,10 @@ export const meter = defineBrick<MeterBrickProps>({
   description: 'Progress toward a target',
   icon: icon(<path d="M2.5 9h13M2.5 9h7" strokeWidth="3" />),
   defaults: { w: 300, h: 144, minW: 160, minH: 96, title: 'Progress', props: { value: 0.62 } },
+  settings: [
+    { key: 'data', type: 'dataset', shape: 'object' },
+    { key: 'format', type: 'format' },
+  ],
   render: ({ props, data, lang }) => {
     const p = merged(props, data);
     return <Meter {...p} value={p.value ?? 0} lang={lang} />;
@@ -229,6 +328,7 @@ export interface TableBrickProps {
   columns?: readonly (Column | string)[];
   rowHeight?: number;
   sortable?: boolean;
+  searchable?: boolean;
   emptyText?: string;
 }
 
@@ -243,8 +343,17 @@ export const table = defineBrick<TableBrickProps>({
   ),
   flush: true,
   defaults: { w: 600, h: 320, minW: 240, minH: 160, title: 'Table', props: { data: SAMPLE_SERIES } },
-  render: ({ props, data, lang, item }) => (
-    <DataTable {...props} data={rowsOf(props.data, data)} lang={lang} ariaLabel={item.title} />
+  settings: [ROWS, { key: 'searchable', type: 'boolean' }],
+  render: ({ props, data, lang, item, messages, emit }) => (
+    <DataTable
+      emptyText={messages.noData}
+      searchLabel={messages.search}
+      {...props}
+      data={rowsOf(props.data, data)}
+      lang={lang}
+      ariaLabel={item.title}
+      onRowClick={emit ? (datum, index) => emit({ datum, index }) : undefined}
+    />
   ),
 });
 
@@ -262,6 +371,10 @@ export const text = defineBrick<TextBrickProps>({
   icon: icon(<path d="M3.5 5V3.5h11V5M9 3.5v11M7 14.5h4" />),
   chrome: 'bare',
   defaults: { w: 400, h: 64, minW: 120, minH: 40, props: { text: 'Section title', variant: 'heading' } },
+  settings: [
+    { key: 'text', type: 'textarea' },
+    { key: 'variant', type: 'select', options: ['body', 'heading'] },
+  ],
   render: ({ props }) => {
     const paragraphs = (props.text ?? '').split(/\n{2,}/).filter(Boolean);
     return (
@@ -300,4 +413,4 @@ export function withLabels<R extends BrickRegistry>(
 }
 
 export { defineBrick, resolveData } from '../react/brick';
-export type { BrickContext, BrickDefinition, BrickRegistry, DataMap } from '../react/brick';
+export type { BrickContext, BrickDefinition, BrickRegistry, BrickSelection, DataMap, SettingField } from '../react/brick';

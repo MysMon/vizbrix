@@ -1,7 +1,7 @@
 import type { ReactElement, ReactNode } from 'react';
 import type { Messages } from '../core/messages';
 import type { DashboardItem } from '../core/types';
-import type { BrickDefinition, BrickRegistry, DataMap } from './brick';
+import type { BrickDefinition, BrickRegistry, BrickSelection, DataMap, DataStatus } from './brick';
 
 /**
  * The brick's chrome: surface, title bar, body. Hook-free on purpose — the
@@ -41,12 +41,59 @@ export function BrickShell(props: {
 export function renderBrick(
   item: DashboardItem,
   definition: BrickDefinition | undefined,
-  env: { data: DataMap; editing: boolean; messages: Messages },
+  env: {
+    data: DataMap;
+    editing: boolean;
+    messages: Messages;
+    status?: DataStatus;
+    onRetry?: () => void;
+    emit?: (selection: BrickSelection) => void;
+  },
 ): ReactNode {
   if (!definition) {
     return <div className="vbx-brick-placeholder">{env.messages.unknownBrick(item.type)}</div>;
   }
-  return definition.render({ item, props: item.props ?? {}, data: env.data, editing: env.editing, lang: env.messages.lang });
+  const state = typeof env.status === 'object' ? env.status.state : env.status;
+  const name = datasetOf(item);
+  const hasData = name !== undefined && env.data[name] !== undefined;
+  // Nothing to show yet: say so. A failed load keeps no stale numbers on screen.
+  if (state === 'error' || (state === 'loading' && !hasData)) {
+    const message = typeof env.status === 'object' ? env.status.message : undefined;
+    return (
+      <div className="vbx-brick-placeholder" data-state={state} role={state === 'error' ? 'alert' : 'status'}>
+        <span>{message ?? (state === 'error' ? env.messages.loadError : env.messages.loading)}</span>
+        {state === 'error' && env.onRetry ? (
+          <button type="button" className="vbx-button" data-vbx-nodrag="" onClick={env.onRetry}>
+            {env.messages.retry}
+          </button>
+        ) : null}
+      </div>
+    );
+  }
+  const content = definition.render({
+    item,
+    props: item.props ?? {},
+    data: env.data,
+    editing: env.editing,
+    lang: env.messages.lang,
+    messages: env.messages,
+    emit: env.editing ? undefined : env.emit,
+  });
+  // Refetching with data on screen: keep the previous render, dimmed, so the
+  // layout does not jump and no skeleton flashes.
+  return state === 'loading' ? (
+    <div className="vbx-brick-stale" aria-busy="true">
+      {content}
+    </div>
+  ) : (
+    content
+  );
+}
+
+/** Name of the dataset a brick is bound to, when its `data` prop is a reference. */
+export function datasetOf(item: DashboardItem): string | undefined {
+  const ref = item.props?.data;
+  return typeof ref === 'string' ? ref : undefined;
 }
 
 export function definitionOf(item: DashboardItem, bricks: BrickRegistry): BrickDefinition | undefined {

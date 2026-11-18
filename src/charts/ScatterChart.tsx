@@ -1,5 +1,15 @@
 import { memo, useMemo, useState, type CSSProperties, type ReactElement } from 'react';
-import { ChartFrame, Legend, Tooltip, seriesColor, toNumber, type Datum, type ResolvedSeries, type Size } from './common';
+import {
+  ChartFrame,
+  Legend,
+  Tooltip,
+  seriesColor,
+  toNumber,
+  type ChartSelection,
+  type Datum,
+  type ResolvedSeries,
+  type Size,
+} from './common';
 import { formatter, textWidth, type Format } from './format';
 import { linear, niceTicks } from './scale';
 
@@ -21,6 +31,8 @@ export interface ScatterChartProps {
   xLabel?: string;
   yLabel?: string;
   legend?: boolean;
+  /** Called when a point is clicked (or chosen with Enter). */
+  onSelect?: (selection: ChartSelection) => void;
   lang?: string;
   ariaLabel?: string;
   height?: number | string;
@@ -36,6 +48,8 @@ interface Point {
   size: number | null;
   group: number;
   name: string;
+  /** Index of the source row in `data`. */
+  row: number;
 }
 
 interface Layout {
@@ -155,6 +169,7 @@ function HoverLayer(props: {
   sizeLabel?: string;
   grouped: boolean;
   lang?: string;
+  onPick?: (row: number) => void;
 }): ReactElement {
   const { layout, points, groups, size } = props;
   const [active, setActive] = useState<number | null>(null);
@@ -188,6 +203,7 @@ function HoverLayer(props: {
     else if (event.key === 'Home') setActive(order[0]!);
     else if (event.key === 'End') setActive(order[order.length - 1]!);
     else if (event.key === 'Escape') setActive(null);
+    else if ((event.key === 'Enter' || event.key === ' ') && dot && props.onPick) props.onPick(points[dot.index]!.row);
     else return;
     event.preventDefault();
   };
@@ -201,6 +217,10 @@ function HoverLayer(props: {
       aria-label={props.label}
       onPointerMove={fromPointer}
       onPointerDown={fromPointer}
+      onClick={() => {
+        if (dot && props.onPick) props.onPick(points[dot.index]!.row);
+      }}
+      data-clickable={props.onPick && dot ? '' : undefined}
       onPointerLeave={() => setActive(null)}
       onBlur={() => setActive(null)}
       onKeyDown={onKey}
@@ -243,14 +263,15 @@ export function ScatterChart(props: ScatterChartProps): ReactElement {
   const model = useMemo(() => {
     const names: string[] = [];
     const points: Point[] = [];
-    for (const d of data) {
+    for (let row = 0; row < data.length; row++) {
+      const d = data[row]!;
       const px = toNumber(d[x]);
       const py = toNumber(d[y]);
       if (px === null || py === null) continue;
       const g = group ? String(d[group] ?? '') : '';
       let gi = names.indexOf(g);
       if (gi < 0) gi = names.push(g) - 1;
-      points.push({ x: px, y: py, size: sizeKey ? toNumber(d[sizeKey]) : null, group: gi, name: label ? String(d[label] ?? '') : '' });
+      points.push({ x: px, y: py, size: sizeKey ? toNumber(d[sizeKey]) : null, group: gi, name: label ? String(d[label] ?? '') : '', row });
     }
     const groups: ResolvedSeries[] = names.map((name, index) => ({ key: name, label: name, color: seriesColor(index), index }));
     return { points, groups };
@@ -323,6 +344,7 @@ function ScatterPlot(props: {
         sizeLabel={options.size}
         grouped={!!options.group}
         lang={lang}
+        onPick={options.onSelect ? (row) => options.onSelect!({ datum: options.data[row]!, index: row }) : undefined}
       />
     </>
   );
