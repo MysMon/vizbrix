@@ -5,7 +5,9 @@
 [![CI](https://github.com/MysMon/vizbrix/actions/workflows/ci.yml/badge.svg)](https://github.com/MysMon/vizbrix/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-*[English README →](./README.md)*
+*[English README →](./README.md)* ・ **[画像で見る（ビジュアルギャラリー）→](./docs/GALLERY.md)**
+
+![vizbrix で組んだダッシュボード](./docs/images/overview-light.png)
 
 ```tsx
 import { createDashboard } from 'vizbrix';
